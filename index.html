@@ -1704,9 +1704,13 @@ function renderAnggotaTable(){
   const q = state.memberSearch.toLowerCase();
   const filtered = state.anggota.filter(a=>String(a.nama||"").toLowerCase().includes(q) || String(a.nis||"").toLowerCase().includes(q));
   const list = sortAnggotaList(filtered);
-  wrap.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>NIS</th><th>Nama</th><th>Kelas</th><th>L/P</th><th>Terdaftar</th><th></th></tr></thead><tbody>
-    ${list.map(a=>`<tr><td>${esc(a.nis)}</td><td>${esc(a.nama)}</td><td>Kelas ${esc(a.kelas)}</td><td>${esc(a.lp)}</td><td>${fmt(a.tglDaftar)}</td>
-      <td style="display:flex;gap:6px;"><button class="icon-btn" title="Riwayat peminjaman anggota" aria-label="Riwayat peminjaman anggota" data-historyanggota="${a.id}">${icon("history",15)}</button><button class="icon-btn" data-editanggota="${a.id}">${icon("pencil",15)}</button><button class="icon-btn" data-copyanggota="${a.id}">${icon("copy",15)}</button><button class="icon-btn" data-delanggota="${a.id}">${icon("trash2",15)}</button></td></tr>`).join("")}
+  wrap.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>NIS</th><th>Nama</th><th>Kategori</th><th>Kelas/Unit</th><th>L/P</th><th>Terdaftar</th><th></th></tr></thead><tbody>
+    ${list.map(a=>{
+      const kategori = a.kategori || "siswa";
+      const kelasUnit = kategori === "siswa" ? `Kelas ${esc(a.kelas)}` : esc(a.unit || "-");
+      return `<tr><td>${esc(a.nis)}</td><td>${esc(a.nama)}</td><td>${esc(anggotaKategoriLabel(kategori))}</td><td>${kelasUnit}</td><td>${esc(a.lp)}</td><td>${fmt(a.tglDaftar)}</td>
+      <td style="display:flex;gap:6px;"><button class="icon-btn" title="Riwayat peminjaman anggota" aria-label="Riwayat peminjaman anggota" data-historyanggota="${a.id}">${icon("history",15)}</button><button class="icon-btn" data-editanggota="${a.id}">${icon("pencil",15)}</button><button class="icon-btn" data-copyanggota="${a.id}">${icon("copy",15)}</button><button class="icon-btn" data-delanggota="${a.id}">${icon("trash2",15)}</button></td></tr>`;
+    }).join("")}
   </tbody></table></div>${list.length===0?'<div class="muted" style="text-align:center;">Tidak ada anggota yang cocok.</div>':''}`;
   wrap.querySelectorAll("[data-historyanggota]").forEach(b=>b.addEventListener("click", ()=>openMemberHistory(b.dataset.historyanggota)));
   wrap.querySelectorAll("[data-editanggota]").forEach(b=>b.addEventListener("click", ()=>openAnggotaModal("edit", state.anggota.find(a=>a.id===b.dataset.editanggota))));
@@ -1718,16 +1722,20 @@ function bindAnggota(){
   const sort = document.getElementById("anggotaSort");
   if(sort) sort.addEventListener("change", renderAnggotaTable);
   document.getElementById("btnScanAnggota").addEventListener("click", ()=>{ state.scanMode="member"; state.scanOpen=true; renderModal(); });
-  document.getElementById("btnTambahAnggota").addEventListener("click", ()=>openAnggotaModal("add", {nis:"", nama:"", kelas:"1", lp:"L", alamat:"", tglDaftar:iso(todayDate)}));
+  document.getElementById("btnTambahAnggota").addEventListener("click", ()=>openAnggotaModal("add", {nis:"", nama:"", kategori:"siswa", kelas:"1", unit:"", lp:"L", alamat:"", tglDaftar:iso(todayDate)}));
   renderAnggotaTable();
 }
 function openAnggotaModal(mode, data){ state.anggotaModal={mode, data:{...data}}; renderModal(); }
 function saveAnggotaFromForm(){
+  const kategori = document.getElementById("ag_kategori").value;
+  const isSiswa = kategori === "siswa";
   const d = {
     id: state.anggotaModal.data.id,
     nis: document.getElementById("ag_nis").value.trim(),
     nama: document.getElementById("ag_nama").value.trim(),
-    kelas: document.getElementById("ag_kelas").value,
+    kategori: kategori,
+    kelas: isSiswa ? document.getElementById("ag_kelas").value : "",
+    unit: isSiswa ? "" : document.getElementById("ag_unit").value.trim(),
     lp: document.getElementById("ag_lp").value,
     alamat: document.getElementById("ag_alamat").value.trim(),
     tglDaftar: document.getElementById("ag_tgl").value,
@@ -1994,7 +2002,7 @@ function peminjamanHTML(){
       <div class="row-between" style="gap:12px;align-items:flex-start;"><div><h3 class="panel-title" style="margin-bottom:4px;">Peminjaman Baru</h3><p class="hint" style="margin:0;">Pilih manual atau gunakan alur scan QR yang lebih cepat.</p></div><button class="btn btn-gold" id="btnScanLoan">${icon("scanLine",15)} Scan untuk Peminjaman</button></div>
       <div class="field" style="margin-top:16px;"><label class="field-label">Anggota</label>
       <div class="field"><label class="field-label">Anggota</label>
-        <select id="pj_anggota">${state.anggota.sort((a,b)=>a.nama.localeCompare(b.nama)).map(a=>`<option value="${a.id}">${esc(a.nama)} — Kelas ${esc(a.kelas)}</option>`).join("")}</select>
+        <select id="pj_anggota">${state.anggota.sort((a,b)=>a.nama.localeCompare(b.nama)).map(a=>`<option value="${a.id}">${esc(a.nama)} — ${anggotaKelasUnitLabel(a)}</option>`).join("")}</select>
       </div>
       <div class="field"><label class="field-label">Buku (tersedia: ${tersedia.length})</label>
         <select id="pj_buku">${tersedia.map(b=>`<option value="${b.id}">${esc(b.kode)} — ${esc(b.judul)}</option>`).join("")}</select>
@@ -2040,7 +2048,7 @@ function memberHistoryHTML(a){
   const hist=memberLoanHistory(a.id);
   const active=activeLoans().filter(l=>l.anggotaId===a.id);
   return `<div class="modal-backdrop" id="historyBackdrop"><div class="modal" style="max-width:720px;">
-    <div class="modal-header"><div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--gold);font-weight:700;">Riwayat Anggota</div><h3 class="modal-title">${esc(a.nama)}</h3><div class="hint">NIS ${esc(a.nis||"-")} · Kelas ${esc(a.kelas||"-")}</div></div><button class="close-x" id="closeHistoryModal">${icon("x",15)}</button></div>
+    <div class="modal-header"><div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--gold);font-weight:700;">Riwayat Anggota</div><h3 class="modal-title">${esc(a.nama)}</h3><div class="hint">NIS ${esc(a.nis||"-")} · ${anggotaKelasUnitLabel(a)}</div></div><button class="close-x" id="closeHistoryModal">${icon("x",15)}</button></div>
     ${active.length?`<div class="panel" style="margin-bottom:12px;border-color:#ead2d2;"><b>Pinjaman aktif (${active.length})</b>${active.map(l=>`<div style="padding:9px 0;border-bottom:1px solid var(--line);"><b>${esc(l.judulBuku)}</b> · ${fmt(l.tanggalPinjam)} · jatuh tempo ${fmt(l.tanggalJatuhTempo)}</div>`).join("")}</div>`:""}
     <div class="row-between"><h4 class="panel-title" style="margin:0;">Buku yang pernah dipinjam (${hist.length})</h4></div>
     ${hist.length?`<div class="table-wrap" style="margin-top:10px;"><table class="data-table"><thead><tr><th>Tanggal</th><th>Buku</th><th>Kode</th><th>Kembali</th><th>Status</th><th>Aksi</th></tr></thead><tbody>${hist.map(l=>`<tr><td>${fmt(l.tanggalPinjam)}</td><td>${esc(l.judulBuku)}</td><td>${esc(l.kodeBuku)}</td><td>${fmt(l.tanggalKembali)}</td><td>${esc(l.status)}</td><td><button type="button" class="btn btn-rose btn-sm" data-delhistory="${esc(l.id)}" title="Hapus riwayat ini">${icon("trash2",14)} Hapus</button></td></tr>`).join("")}</tbody></table></div>`:`<div class="muted" style="padding:30px 0;text-align:center;">Belum ada riwayat peminjaman.</div>`}
@@ -2222,7 +2230,7 @@ function loanEditModalHTML(){
     <div class="modal-header"><h3 class="modal-title">Edit Transaksi Peminjaman</h3><button class="close-x" id="closeLeModal">${icon("x",15)}</button></div>
     <p class="hint" style="margin:0 0 14px;">Gunakan ini untuk memperbaiki transaksi yang salah pilih nama anggota atau salah pilih buku, meskipun sudah terlanjur disimpan.</p>
     <div class="field"><label class="field-label">Anggota (Peminjam)</label>
-      <select id="le_anggota">${state.anggota.slice().sort((a,b)=>a.nama.localeCompare(b.nama)).map(a=>`<option value="${a.id}" ${a.id===d.anggotaId?'selected':''}>${esc(a.nama)} — Kelas ${esc(a.kelas)}</option>`).join("")}</select>
+      <select id="le_anggota">${state.anggota.slice().sort((a,b)=>a.nama.localeCompare(b.nama)).map(a=>`<option value="${a.id}" ${a.id===d.anggotaId?'selected':''}>${esc(a.nama)} — ${anggotaKelasUnitLabel(a)}</option>`).join("")}</select>
     </div>
     <div class="field"><label class="field-label">Buku</label>
       <select id="le_buku">${tersediaBuku.map(b=>`<option value="${esc(b.kode)}" ${b.kode===d.kodeBuku?'selected':''}>${esc(b.kode)} — ${esc(b.judul)}</option>`).join("")}</select>
@@ -2314,7 +2322,7 @@ function kartuLiterasiHTML(){
   return `<div class="panel" style="max-width:600px;">
     <h3 class="panel-title">Kartu Literasi</h3>
     <div class="field"><label class="field-label">Pilih Anggota</label>
-      <select id="kl_anggota">${opts.map(a=>`<option value="${a.id}" ${a.id===selId?'selected':''}>${esc(a.nama)} — Kelas ${esc(a.kelas)}</option>`).join("")}</select>
+      <select id="kl_anggota">${opts.map(a=>`<option value="${a.id}" ${a.id===selId?'selected':''}>${esc(a.nama)} — ${anggotaKelasUnitLabel(a)}</option>`).join("")}</select>
     </div>
     ${ang ? `
     <div class="table-wrap" style="margin-top:14px;"><table class="data-table"><thead><tr><th>#</th><th>Judul Buku</th><th>Tanggal Selesai</th></tr></thead><tbody>
@@ -2364,7 +2372,7 @@ function renderCariAnggotaResult(){
   const list = state.anggota.filter(a=>a.nama.toLowerCase().includes(q)).sort((a,b)=>a.nama.localeCompare(b.nama));
   wrap.innerHTML = list.map(a=>{
     const aktif = state.loans.filter(l=>l.anggotaId===a.id && l.status==="dipinjam");
-    return `<div class="panel" style="margin-bottom:12px;"><div class="row-between"><div><b>${esc(a.nama)}</b> <span class="muted" style="padding:0;">— Kelas ${esc(a.kelas)} · NIS ${esc(a.nis)}</span></div><span class="badge badge-plum">${aktif.length} pinjam aktif</span></div>
+    return `<div class="panel" style="margin-bottom:12px;"><div class="row-between"><div><b>${esc(a.nama)}</b> <span class="muted" style="padding:0;">— ${anggotaKelasUnitLabel(a)} · NIS ${esc(a.nis)}</span></div><span class="badge badge-plum">${aktif.length} pinjam aktif</span></div>
       ${aktif.length>0?`<div style="margin-top:8px;">${aktif.map(l=>`<div class="loan-sub">• ${esc(l.judulBuku)} (jatuh tempo ${fmt(l.tanggalJatuhTempo)})</div>`).join("")}</div>`:''}
     </div>`;
   }).join("") || `<div class="muted">Tidak ditemukan.</div>`;
@@ -3160,7 +3168,7 @@ function loanModalHTML(){
       <h3 class="modal-title" style="margin-top:3px;">${esc(b.judul)}</h3><span class="kode-chip" style="background:${bookCodeColor(b.kode)}">${esc(b.kode)}</span>
     </div><button class="close-x" id="closeLoanModal">${icon("x",15)}</button></div>
     <div class="field" style="margin-top:14px;"><label class="field-label">Anggota</label>
-      <select id="l_anggota">${state.anggota.sort((a,b2)=>a.nama.localeCompare(b2.nama)).map(a=>`<option value="${a.id}">${esc(a.nama)} — Kelas ${esc(a.kelas)}</option>`).join("")}</select>
+      <select id="l_anggota">${state.anggota.sort((a,b2)=>a.nama.localeCompare(b2.nama)).map(a=>`<option value="${a.id}">${esc(a.nama)} — ${anggotaKelasUnitLabel(a)}</option>`).join("")}</select>
     </div>
     <div class="hint" style="margin:10px 0 16px;">Tanggal pinjam: ${fmt(todayDate)} · Jatuh tempo: ${fmt(addDays(todayDate, state.settings.lamaPinjamHari))}</div>
     <button class="btn btn-primary btn-block" id="confirmLoanBtn">Konfirmasi Peminjaman</button>
@@ -3180,10 +3188,24 @@ function bindLoanModal(){
 function openLoanModal(bookId){ const b=state.books.find(x=>x.id===bookId); if(!b) return; state.loanTarget=b; renderModal(); }
 
 /* ---- Anggota modal ---- */
+const ANGGOTA_KATEGORI_LIST = [
+  {kode:"siswa", label:"Siswa"},
+  {kode:"pengurus", label:"Pengurus"},
+  {kode:"ustadzah", label:"Ustadzah/Guru"},
+];
+function anggotaKategoriLabel(kode){ return (ANGGOTA_KATEGORI_LIST.find(k=>k.kode===kode)||ANGGOTA_KATEGORI_LIST[0]).label; }
+function anggotaKelasUnitLabel(a){ return (a.kategori && a.kategori!=="siswa") ? `${anggotaKategoriLabel(a.kategori)} · ${esc(a.unit||'-')}` : `Kelas ${esc(a.kelas)}`; }
 function anggotaModalHTML(){
   const m=state.anggotaModal, d=m.data;
+  const kategori = d.kategori || "siswa";
+  const isSiswa = kategori === "siswa";
   return `<div class="modal-backdrop" id="agBackdrop"><div class="modal"><div class="modal-header"><h3 class="modal-title">${m.mode==='add'?'Tambah Anggota':'Edit Anggota'}</h3><button class="close-x" id="closeAgModal">${icon("x",15)}</button></div>
-    <div class="field-row"><div class="field"><label class="field-label">NIS</label><input id="ag_nis" value="${esc(d.nis)}"/></div><div class="field"><label class="field-label">Kelas</label><select id="ag_kelas">${["1","2","3","4","5","6"].map(k=>`<option value="${k}" ${d.kelas===k?'selected':''}>Kelas ${k}</option>`).join("")}</select></div></div>
+    <div class="field"><label class="field-label">Kategori Anggota</label><select id="ag_kategori">${ANGGOTA_KATEGORI_LIST.map(k=>`<option value="${k.kode}" ${kategori===k.kode?'selected':''}>${k.label}</option>`).join("")}</select></div>
+    <div class="field-row"><div class="field"><label class="field-label">NIS</label><input id="ag_nis" value="${esc(d.nis)}"/></div><div class="field"><label class="field-label">${isSiswa?'Kelas':'Unit'}</label>${
+      isSiswa
+        ? `<select id="ag_kelas">${["1","2","3","4","5","6"].map(k=>`<option value="${k}" ${d.kelas===k?'selected':''}>Kelas ${k}</option>`).join("")}</select>`
+        : `<input id="ag_unit" value="${esc(d.unit||'')}" placeholder="mis. Perpustakaan, Tata Usaha, dll"/>`
+    }</div></div>
     <div class="field"><label class="field-label">Nama Lengkap</label><input id="ag_nama" value="${esc(d.nama)}"/></div>
     <div class="field-row"><div class="field"><label class="field-label">L/P</label><select id="ag_lp"><option value="L" ${d.lp==='L'?'selected':''}>Laki-laki</option><option value="P" ${d.lp==='P'?'selected':''}>Perempuan</option></select></div>
       <div class="field"><label class="field-label">Tanggal Daftar</label><input type="date" id="ag_tgl" value="${esc(d.tglDaftar)}"/></div></div>
@@ -3194,6 +3216,7 @@ function anggotaModalHTML(){
 function bindAnggotaModal(){
   document.getElementById("agBackdrop").addEventListener("click", e=>{ if(e.target.id==="agBackdrop"){ state.anggotaModal=null; renderModal(); } });
   document.getElementById("closeAgModal").addEventListener("click", ()=>{ state.anggotaModal=null; renderModal(); });
+  document.getElementById("ag_kategori").addEventListener("change", e=>{ state.anggotaModal.data.kategori=e.target.value; renderModal(); });
   document.getElementById("saveAgBtn").addEventListener("click", saveAnggotaFromForm);
 }
 
@@ -3472,7 +3495,7 @@ function scanConfirmHTML(){
     if(!a||!b){ state.scanConfirm=null; return ''; }
     return `<div class="modal-backdrop" id="scanConfirmBackdrop"><div class="modal" style="max-width:430px;">
       <div class="modal-header"><div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--gold);font-weight:700;">Konfirmasi Peminjaman</div><h3 class="modal-title">${esc(b.judul)}</h3></div><button class="close-x" id="closeScanConfirm">${icon("x",15)}</button></div>
-      <div class="panel" style="margin-top:12px;"><div><b>Peminjam</b><br>${esc(a.nama)} · Kelas ${esc(a.kelas)}<br>NIS ${esc(a.nis||'-')}</div><hr style="border:0;border-top:1px solid var(--line);margin:12px 0;"><div><b>Buku</b><br><span class="kode-chip" style="background:${bookCodeColor(b.kode)}">${esc(b.kode)}</span> ${esc(b.judul)}</div><div class="hint" style="margin-top:10px;">Tanggal pinjam: ${fmt(todayDate)} · Jatuh tempo: ${fmt(addDays(todayDate,state.settings.lamaPinjamHari))}</div></div>
+      <div class="panel" style="margin-top:12px;"><div><b>Peminjam</b><br>${esc(a.nama)} · ${anggotaKelasUnitLabel(a)}<br>NIS ${esc(a.nis||'-')}</div><hr style="border:0;border-top:1px solid var(--line);margin:12px 0;"><div><b>Buku</b><br><span class="kode-chip" style="background:${bookCodeColor(b.kode)}">${esc(b.kode)}</span> ${esc(b.judul)}</div><div class="hint" style="margin-top:10px;">Tanggal pinjam: ${fmt(todayDate)} · Jatuh tempo: ${fmt(addDays(todayDate,state.settings.lamaPinjamHari))}</div></div>
       <button class="btn btn-primary btn-block" id="confirmScanLoan" style="margin-top:14px;">${icon("check",15)} Simpan Peminjaman</button>
     </div></div>`;
   }
@@ -3539,11 +3562,16 @@ function printLabels(){
 
 /* ============ CETAK: KARTU ANGGOTA ============ */
 function kartuAnggotaCardHTML(a){
+  const kategori = a.kategori || "siswa";
+  const isSiswa = kategori === "siswa";
+  const kelasUnitRow = isSiswa
+    ? `<div class="id-card-row"><b>Kelas:</b> ${esc(a.kelas)}</div>`
+    : `<div class="id-card-row"><b>Kategori:</b> ${esc(anggotaKategoriLabel(kategori))}</div><div class="id-card-row"><b>Unit:</b> ${esc(a.unit||'-')}</div>`;
   return `<div class="id-card member-card-print"><div class="id-card-inner">
     <div class="id-card-text"><div class="id-card-head">${esc(state.settings.namaMaktabah)}</div>
     <div class="id-card-name">${esc(a.nama)}</div>
     <div class="id-card-row"><b>NIS:</b> ${esc(a.nis)}</div>
-    <div class="id-card-row"><b>Kelas:</b> ${esc(a.kelas)}</div>
+    ${kelasUnitRow}
     <div class="id-card-row id-card-row-tanggal"><b>Terdaftar:</b> ${fmtCard(a.tglDaftar)}</div></div>
     <div class="id-card-qr"><img referrerpolicy="no-referrer" src="${qrImageUrl(qrPayloadMember(a.nis,a.id),220)}" width="220" height="220" alt="QR ${esc(a.nis||a.id)}"/></div>
     </div></div>`;
