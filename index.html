@@ -1380,24 +1380,51 @@ function renderPublic(){
     document.querySelectorAll("[data-public-guide]").forEach(b=>b.onclick=()=>document.getElementById("publicGuide")?.scrollIntoView({behavior:"smooth",block:"start"}));
     bindPublicGuideStepper();
     bindPublicSlideshow();
+    const mount=document.getElementById("publicCatalogMount");
+    const renderCatalogResults=()=>{
+      if(!mount) return;
+      mount.innerHTML=publicCatalogHTML();
+      const nextInp=mount.querySelector("#publicCatalogSearch");
+      if(nextInp){
+        nextInp.focus();
+        const len=nextInp.value.length;
+        try{ nextInp.setSelectionRange(len,len); }catch(_){}
+      }
+    };
+    if(mount && !mount.dataset.catalogSearchBound){
+      mount.dataset.catalogSearchBound="1";
+      mount.addEventListener("input",e=>{
+        if(e.target?.id!=="publicCatalogSearch") return;
+        state.publicSearch=e.target.value;
+        const cursorStart=e.target.selectionStart;
+        const cursorEnd=e.target.selectionEnd;
+        mount.innerHTML=publicCatalogHTML();
+        const nextInp=mount.querySelector("#publicCatalogSearch");
+        if(nextInp){
+          nextInp.focus();
+          try{ nextInp.setSelectionRange(cursorStart,cursorEnd); }catch(_){}
+        }
+      });
+      mount.addEventListener("keydown",e=>{
+        if(e.target?.id!=="publicCatalogSearch" || e.key!=="Enter") return;
+        e.preventDefault();
+        state.publicSearch=e.target.value;
+        renderCatalogResults();
+      });
+      mount.addEventListener("click",e=>{
+        const btn=e.target.closest("#publicCatalogSearchBtn");
+        if(!btn) return;
+        state.publicSearch=mount.querySelector("#publicCatalogSearch")?.value||"";
+        renderCatalogResults();
+      });
+    }
     document.querySelectorAll("[data-public-catalog]").forEach(b=>b.onclick=()=>{
-      const mount=document.getElementById("publicCatalogMount");
+      if(!mount) return;
       mount.innerHTML=publicCatalogHTML();
       mount.scrollIntoView({behavior:"smooth"});
-      const inp=document.getElementById("publicCatalogSearch");
-      const searchBtn=document.getElementById("publicCatalogSearchBtn");
-      if(inp){
-        inp.oninput=e=>{state.publicSearch=e.target.value;};
-        inp.onkeydown=e=>{if(e.key==="Enter") searchBtn?.click();};
-      }
-      if(searchBtn){
-        searchBtn.onclick=()=>{
-          state.publicSearch=inp?.value||"";
-          mount.innerHTML=publicCatalogHTML();
-          bind();
-          document.getElementById("publicCatalogSearch")?.focus();
-        };
-      }
+      const inp=mount.querySelector("#publicCatalogSearch");
+      inp?.focus();
+      if(inp){ try{ inp.setSelectionRange(inp.value.length,inp.value.length); }catch(_){} }
     });
     document.querySelectorAll("[data-admin-login]").forEach(b=>b.onclick=()=>{
       state.view="admin"; state.mode="petugas"; state.authModal=true; location.hash="admin"; render(); renderModal();
@@ -1985,12 +2012,66 @@ function deleteBook(id){
 async function uploadBookCover(file, bookId){
   if(!file) return null;
   if(!file.type.startsWith("image/")) throw new Error("File cover harus berupa gambar.");
-  if(file.size>8*1024*1024) throw new Error("Ukuran gambar maksimal 8 MB.");
-  if(!storage || !currentUser) throw new Error("Firebase Storage belum siap. Pastikan sudah login dan koneksi tersedia.");
-  const ext=(file.type.split("/")[1]||"jpg").replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"jpg";
-  const ref=storage.ref(`maktabahAlFaruq/covers/${bookId}.${ext}`);
-  const snap=await ref.put(file,{contentType:file.type,cacheControl:"public,max-age=31536000"});
-  return await snap.ref.getDownloadURL();
+  if(file.size>15*1024*1024) throw new Error("Ukuran gambar maksimal 15 MB.");
+
+  // Utamakan Firebase Storage. Jika Storage belum aktif/Rules menolak upload,
+  // gunakan fallback terkompresi agar cover tetap bisa tersimpan di data buku.
+  if(storage && currentUser){
+    try{
+      const ext=(file.type.split("/")[1]||"jpg").replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"jpg";
+      const ref=storage.ref(`maktabahAlFaruq/covers/${bookId}.${ext}`);
+      const metadata={contentType:file.type,cacheControl:"public,max-age=31536000"};
+      const task=ref.put(file,metadata);
+      await new Promise((resolve,reject)=>{
+        let settled=false;
+        const finish=(fn,val)=>{ if(settled) return; settled=true; clearTimeout(timer); fn(val); };
+        const timer=setTimeout(()=>{ try{task.cancel();}catch(e){} finish(reject,new Error("Storage timeout")); },10000);
+        task.on(firebase.storage.TaskEvent.STATE_CHANGED,()=>{},err=>finish(reject,err),()=>finish(resolve));
+      });
+      return await ref.getDownloadURL();
+    }catch(err){
+      console.warn("Firebase Storage upload gagal, memakai fallback cover terkompresi.",err);
+    }
+  }
+
+  return await makeCoverDataUrl(file);
+}
+
+function makeCoverDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
+    reader.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error("Foto cover tidak dapat diproses."));
+      img.onload=()=>{
+        const maxW=500, maxH=720;
+        const scale=Math.min(1,maxW/img.naturalWidth,maxH/img.naturalHeight);
+        const w=Math.max(1,Math.round(img.naturalWidth*scale));
+        const h=Math.max(1,Math.round(img.naturalHeight*scale));
+        const canvas=document.createElement("canvas");
+        canvas.width=w; canvas.height=h;
+        const ctx=canvas.getContext("2d");
+        if(!ctx){ reject(new Error("Browser tidak mendukung pemrosesan foto cover.")); return; }
+        ctx.fillStyle="#ffffff";
+        ctx.fillRect(0,0,w,h);
+        ctx.drawImage(img,0,0,w,h);
+        let quality=0.72;
+        let out=canvas.toDataURL("image/jpeg",quality);
+        while(out.length>220000 && quality>0.40){
+          quality-=0.06;
+          out=canvas.toDataURL("image/jpeg",quality);
+        }
+        if(out.length>350000){
+          reject(new Error("Cover terlalu besar setelah diproses. Pilih foto cover yang lebih sederhana."));
+          return;
+        }
+        resolve(out);
+      };
+      img.src=reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function previewBookCover(file){
@@ -2036,7 +2117,7 @@ async function saveBookFromForm(){
   if(!data.judul){ showToast("Judul buku tidak boleh kosong","rose"); return; }
   if(!data.kode){ showToast("Kode buku tidak boleh kosong","rose"); return; }
   if(state.books.some(b=>b.kode===data.kode && b.id!==data.id)){ showToast(`Kode ${data.kode} sudah dipakai buku lain`,"rose"); return; }
-  if(m.mode==="add"){ state.books.push({...data, id:uid()}); showToast(`Buku "${data.judul}" (${data.kode}) ditambahkan`,"plum"); }
+  if(m.mode==="add"){ state.books.push({...data, id:data.id||uid()}); showToast(`Buku "${data.judul}" (${data.kode}) ditambahkan`,"plum"); }
   else{
     const old=state.books.find(b=>b.id===data.id); const oldKode=old.kode;
     state.books=state.books.map(b=>b.id===data.id?data:b);
@@ -3659,7 +3740,8 @@ function printSemuaKartuBuku(){
       <div class="id-card-qr"><img referrerpolicy="no-referrer" src="${qrImageUrl(qrPayloadBook(b.kode),220)}" width="220" height="220" alt="QR ${esc(b.kode)}"/></div>
     </div></div>`;
   }).join("")}</div>`;
-  printAfterImages(350);
+  // Cetak langsung dari aksi klik agar browser mobile tidak memblokir dialog print.
+  window.print();
 }
 function printKartuBuku(bookId){
   const b=state.books.find(x=>x.id===bookId); if(!b){ showToast("Buku tidak ditemukan","rose"); return; }
