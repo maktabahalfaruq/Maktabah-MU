@@ -1127,7 +1127,7 @@ function publicBookCard(b, i=0){
   const borrowed=isDipinjam(b.kode);
   const coverClass=`cover-${(i%8)+1}`;
   const cover=b.coverUrl
-    ? `<div class="public-book-cover has-real-cover" style="background-image:url("${esc(b.coverUrl)}")" aria-label="Sampul ${esc(b.judul)}"></div>`
+    ? `<div class="public-book-cover has-real-cover" aria-label="Sampul ${esc(b.judul)}"><img src="${esc(b.coverUrl)}" alt="Sampul ${esc(b.judul)}" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display='none'; this.parentElement.classList.remove('has-real-cover'); this.parentElement.classList.add('${coverClass}'); this.parentElement.innerHTML='<strong>${esc(b.judul).replace(/'/g,"&#39;")}</strong>';" /></div>`
     : `<div class="public-book-cover ${coverClass}"><strong>${esc(b.judul)}</strong></div>`;
   return `<article class="public-book">
     ${cover}
