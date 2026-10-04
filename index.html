@@ -748,7 +748,7 @@ let state = {
   view:(location.hash==="#admin" ? "admin" : "public"),
   loaded:false,
   group:"dashboard", sub:null,
-  search:"", bookSearch:"", memberSearch:"", katFilter:"Semua", statusFilter:"Semua",
+  search:"", bookSearch:"", memberSearch:"", katFilter:"Semua", statusFilter:"Semua", bookSelected:[],
   bookModal:null, loanTarget:null, katModalOpen:false, scanOpen:false, scanMode:"book", scanTxnMemberId:null, scanConfirm:null, scanIgnoreValue:null, scanIgnoreUntil:0, scanWrongNoticeAt:0,
   anggotaModal:null, rakModal:null, kontribModal:null, pinPrompt:null, authModal:null,
   laporanFrom:"", laporanTo:"",
@@ -1933,6 +1933,9 @@ function katalogShellHTML(){
         <option value="dipinjam" ${state.statusFilter==='dipinjam'?'selected':''}>Dipinjam</option></select>
       <button class="btn btn-outline" id="btnCetakLabel">${icon("printer",15)} Cetak Label QR</button>
       <button class="btn btn-gold" id="btnScan">${icon("scanLine",15)} Scan Buku</button>
+      <button class="btn btn-outline" id="btnSelectAllBooks">Pilih Semua</button>
+      <button class="btn btn-outline" id="btnDeleteSelectedBooks" style="color:var(--rose);border-color:var(--rose);">${icon("trash2",15)} Hapus Terpilih</button>
+      <button class="btn btn-outline" id="btnDeleteCategoryBooks" style="color:var(--rose);border-color:var(--rose);">${icon("trash2",15)} Hapus Kategori</button>
       <button class="btn btn-primary" id="btnTambahBuku">+ Tambah Buku</button>
     </div>
     <div id="katalogGrid"></div>
@@ -1944,6 +1947,9 @@ function bindKatalogToolbar(){
   document.getElementById("statusFilterSelect").addEventListener("change", e=>{ state.statusFilter=e.target.value; renderKatalogGrid(); });
   document.getElementById("btnCetakLabel").addEventListener("click", printLabels);
   document.getElementById("btnScan").addEventListener("click", ()=>{ state.scanMode="book"; state.scanOpen=true; renderModal(); });
+  document.getElementById("btnSelectAllBooks").addEventListener("click", toggleSelectAllBooks);
+  document.getElementById("btnDeleteSelectedBooks").addEventListener("click", deleteSelectedBooks);
+  document.getElementById("btnDeleteCategoryBooks").addEventListener("click", deleteBooksByCategory);
   document.getElementById("btnTambahBuku").addEventListener("click", openAddBook);
 }
 function renderKatalogGrid(){
@@ -1965,7 +1971,11 @@ function renderKatalogGrid(){
     const stubColor = b.statusFisik!=='baik' ? '#8C6239' : (b.status==='dipinjam' ? 'var(--rose)' : 'var(--plum)');
     const rak = state.rakList.find(r=>r.kode===b.rak);
     return `
-      <div class="book-card">
+      <div class="book-card" style="position:relative;">
+        <label style="position:absolute;top:10px;right:10px;z-index:2;display:flex;align-items:center;gap:5px;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:8px;padding:5px 7px;font-size:12px;font-weight:700;cursor:pointer;">
+          <input type="checkbox" class="book-select" data-book-select="${esc(b.id)}" ${state.bookSelected.includes(b.id)?"checked":""} style="width:17px;height:17px;accent-color:var(--plum);"/>
+          Pilih
+        </label>
         <div class="row-between">
           <span class="kode-chip" style="background:${bookCodeColor(b.kode)}">${esc(b.kode)}</span>
           <span class="due-stub" style="border:1.5px solid ${stubColor};color:${stubColor};${(b.status==='dipinjam'&&late)?'background:var(--rose-soft);':''}"><span class="due-dot" style="background:${stubColor}"></span>${stubLabel}</span>
@@ -1989,6 +1999,13 @@ function renderKatalogGrid(){
   grid.querySelectorAll("[data-edit]").forEach(b=>b.addEventListener("click", ()=>openEditBook(b.dataset.edit)));
   grid.querySelectorAll("[data-copybook]").forEach(b=>b.addEventListener("click", ()=>copyBook(b.dataset.copybook)));
   grid.querySelectorAll("[data-del]").forEach(b=>b.addEventListener("click", ()=>deleteBook(b.dataset.del)));
+  grid.querySelectorAll("[data-book-select]").forEach(cb=>cb.addEventListener("change", e=>{
+    const id=e.target.dataset.bookSelect;
+    if(e.target.checked){ if(!state.bookSelected.includes(id)) state.bookSelected.push(id); }
+    else state.bookSelected=state.bookSelected.filter(x=>x!==id);
+    updateBookSelectionButtons();
+  }));
+  updateBookSelectionButtons();
 }
 function openAddBook(){
   if(state.kategoriList.length===0){ showToast("Tambahkan kategori dulu di Master Data ▸ Kategori Buku","rose"); return; }
@@ -2008,6 +2025,70 @@ function deleteBook(id){
   const b=state.books.find(x=>x.id===id); if(!b) return;
   if(isDipinjam(b.kode)){ showToast("Tidak bisa dihapus — buku sedang dipinjam","rose"); return; }
   if(confirm(`Hapus "${b.judul}" (${b.kode})?`)){ state.books=state.books.filter(x=>x.id!==id); scheduleSave(); showToast("Buku dihapus","rose"); renderContent(); }
+}
+
+function updateBookSelectionButtons(){
+  const selected=Array.isArray(state.bookSelected)?state.bookSelected:[];
+  const del=document.getElementById("btnDeleteSelectedBooks");
+  const all=document.getElementById("btnSelectAllBooks");
+  if(del){ del.disabled=selected.length===0; del.style.opacity=selected.length===0?".55":"1"; }
+  if(all){
+    const visible=state.books.filter(b=>{
+      const q=(state.bookSearch||"").toLowerCase();
+      return (!q || b.judul.toLowerCase().includes(q)||b.penyusun.toLowerCase().includes(q)||b.kode.toLowerCase().includes(q)) && (state.katFilter==="Semua"||b.kategori===state.katFilter);
+    });
+    all.textContent=visible.length && visible.every(b=>selected.includes(b.id)) ? "Batal Pilih Semua" : "Pilih Semua";
+  }
+}
+
+function toggleSelectAllBooks(){
+  if(!guardAdmin()) return;
+  const q=(state.bookSearch||"").toLowerCase();
+  const visible=state.books.filter(b=>{
+    const mQ=!q || b.judul.toLowerCase().includes(q)||b.penyusun.toLowerCase().includes(q)||b.kode.toLowerCase().includes(q);
+    const mK=state.katFilter==="Semua" || b.kategori===state.katFilter;
+    const mS=state.statusFilter==="Semua" || (isDipinjam(b.kode)?"dipinjam":"tersedia")===state.statusFilter;
+    return mQ&&mK&&mS;
+  });
+  const ids=visible.map(b=>b.id);
+  const allSelected=ids.length>0 && ids.every(id=>state.bookSelected.includes(id));
+  if(allSelected) state.bookSelected=state.bookSelected.filter(id=>!ids.includes(id));
+  else ids.forEach(id=>{if(!state.bookSelected.includes(id)) state.bookSelected.push(id);});
+  renderKatalogGrid();
+}
+
+function deleteSelectedBooks(){
+  if(!guardAdmin()) return;
+  const ids=[...(state.bookSelected||[])];
+  if(!ids.length){ showToast("Pilih buku yang ingin dihapus terlebih dahulu","rose"); return; }
+  const selected=state.books.filter(b=>ids.includes(b.id));
+  const blocked=selected.filter(b=>isDipinjam(b.kode));
+  const removable=selected.filter(b=>!isDipinjam(b.kode));
+  if(!removable.length){ showToast("Semua buku yang dipilih sedang dipinjam","rose"); return; }
+  const msg=blocked.length ? `${removable.length} buku akan dihapus. ${blocked.length} buku yang sedang dipinjam tidak akan dihapus. Lanjutkan?` : `Hapus ${removable.length} buku yang dipilih?`;
+  if(!confirm(msg)) return;
+  const removeIds=new Set(removable.map(b=>b.id));
+  state.books=state.books.filter(b=>!removeIds.has(b.id));
+  state.bookSelected=[];
+  scheduleSave(); renderContent(); showToast(`${removable.length} buku berhasil dihapus`,"rose");
+}
+
+function deleteBooksByCategory(){
+  if(!guardAdmin()) return;
+  if(state.katFilter==="Semua"){ showToast("Pilih kategori terlebih dahulu pada filter Kategori","rose"); return; }
+  const kat=katByKode(state.katFilter);
+  const books=state.books.filter(b=>b.kategori===state.katFilter);
+  if(!books.length){ showToast("Tidak ada buku pada kategori ini","rose"); return; }
+  const blocked=books.filter(b=>isDipinjam(b.kode));
+  const removable=books.filter(b=>!isDipinjam(b.kode));
+  if(!removable.length){ showToast("Semua buku pada kategori ini sedang dipinjam","rose"); return; }
+  const name=kat?.nama||state.katFilter;
+  const msg=blocked.length ? `Hapus semua buku kategori "${name}"? ${removable.length} akan dihapus dan ${blocked.length} buku yang sedang dipinjam akan dipertahankan.` : `Hapus semua ${removable.length} buku dalam kategori "${name}"?`;
+  if(!confirm(msg)) return;
+  const removeIds=new Set(removable.map(b=>b.id));
+  state.books=state.books.filter(b=>!removeIds.has(b.id));
+  state.bookSelected=state.bookSelected.filter(id=>!removeIds.has(id));
+  scheduleSave(); renderContent(); showToast(`${removable.length} buku dari kategori "${name}" berhasil dihapus`,"rose");
 }
 async function uploadBookCover(file, bookId){
   if(!file) return null;
@@ -2574,10 +2655,21 @@ function deleteLaporanData(){
   scheduleSave(); showToast(`${ids.size} data transaksi dihapus dari sumber laporan.` ,"rose"); renderContent();
 }
 function exportLaporanCSV(){
-  const el = document.querySelector(".table-wrap table"); if(!el) return;
-  const rows = [...el.querySelectorAll("tr")].map(tr=>[...tr.children].map(td=>td.textContent));
-  downloadFile(`laporan-${state.sub}-${iso(todayDate)}.xlsx`, toCSV(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  showToast("Laporan diunduh sebagai CSV", "plum");
+  const el = document.querySelector(".table-wrap table");
+  if(!el){ showToast("Tidak ada data laporan untuk diekspor.", "rose"); return; }
+  if(typeof XLSX === "undefined"){
+    showToast("Modul Excel belum termuat. Periksa koneksi internet lalu coba lagi.", "rose");
+    return;
+  }
+  const rows = [...el.querySelectorAll("tr")].map(tr=>
+    [...tr.children].map(td=>td.textContent.trim())
+  );
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = rows[0] ? rows[0].map((_, i)=>({wch: Math.min(40, Math.max(12, ...rows.map(r=>String(r[i] ?? "").length + 2)))})) : [];
+  XLSX.utils.book_append_sheet(wb, ws, "Laporan");
+  XLSX.writeFile(wb, `laporan-${state.sub}-${iso(todayDate)}.xlsx`);
+  showToast("Laporan Excel berhasil diunduh", "plum");
 }
 
 /* ============ CETAK (hub) ============ */
