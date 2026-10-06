@@ -3681,6 +3681,10 @@ async function scanLoopRobust(detector){
     if(clean && clean!==scanLastFound){
       scanLastFound=clean;
       handleScanResult(clean);
+      // Jika setelah hasil ini scanner masih terbuka (misalnya baru selesai
+      // scan anggota dan masuk ke tahap scan buku), lanjutkan loop kamera.
+      // Jangan restart kamera dan jangan memberi batas waktu perpindahan.
+      if(state.scanOpen) scanRAF=requestAnimationFrame(()=>scanLoopRobust(detector));
       return;
     }
   }
