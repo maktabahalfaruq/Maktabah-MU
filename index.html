@@ -191,12 +191,8 @@ const firebaseConfig = {
 
   .scan-video-wrap{ position:relative; width:100%; aspect-ratio:1/1; background:#000; border-radius:10px; overflow:hidden; }
   .scan-video-wrap video{ width:100%; height:100%; object-fit:cover; }
-  .scan-frame{ position:absolute; inset:10%; border:3px solid var(--gold); border-radius:14px; pointer-events:none; box-shadow:0 0 0 999px rgba(0,0,0,.35); transition:border-color .15s, box-shadow .15s; }
-  .scan-frame.is-reading{ border-color:#D6A62C; }
-  .scan-frame.is-success{ border-color:#2E9B62; box-shadow:0 0 0 999px rgba(0,0,0,.28), 0 0 22px rgba(46,155,98,.45); }
-  .scan-status{ position:absolute; left:50%; bottom:18px; transform:translateX(-50%); z-index:3; min-width:190px; max-width:86%; padding:9px 13px; border-radius:999px; background:rgba(20,18,22,.78); color:#fff; text-align:center; font-size:12px; font-weight:700; backdrop-filter:blur(5px); }
-  .scan-status.success{ background:rgba(30,118,73,.92); }
-  .scan-hint{ text-align:center; font-size:12.5px; color:var(--ink-soft); margin-top:10px; line-height:1.5; }
+  .scan-frame{ position:absolute; inset:14%; border:3px solid var(--gold); border-radius:12px; pointer-events:none; box-shadow:0 0 0 999px rgba(0,0,0,.35); }
+  .scan-hint{ text-align:center; font-size:12.5px; color:var(--ink-soft); margin-top:10px; }
 
   .settings-card{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; max-width:480px; }
   .pin-box{ display:flex; gap:8px; }
@@ -3516,7 +3512,7 @@ function bindPinModal(){
 }
 
 /* ============ SCAN QR ============ */
-let scanStream=null, scanRAF=null, scanDetector=null;
+let scanStream=null, scanRAF=null;
 function scanModalHTML(){
   const m=state.scanMode;
   let title="Scan Kode Buku", hint="Arahkan kamera ke QR/barcode buku...";
@@ -3526,8 +3522,8 @@ function scanModalHTML(){
   if(m==="return-book") { title="Pengembalian — Scan Buku"; hint="Scan QR buku yang sedang dipinjam untuk menemukan transaksi aktif."; }
   return `<div class="modal-backdrop" id="scanBackdrop"><div class="modal" style="max-width:400px;">
     <div class="modal-header"><div><h3 class="modal-title">${title}</h3><div class="hint" style="margin-top:3px;">${state.scanTxnMemberId && m==="loan-book" ? `Anggota: <b>${esc((anggotaById(state.scanTxnMemberId)||{}).nama||'-')}</b>` : ''}</div></div><button class="close-x" id="closeScanModal">${icon("x",15)}</button></div>
-    <div class="scan-video-wrap"><video id="scanVideo" playsinline muted></video><div class="scan-frame is-reading" id="scanFrame"></div><div class="scan-status" id="scanStatus">Mencari kode…</div></div>
-    <p class="scan-hint" id="scanHint">${hint}<br><b>Tidak perlu cepat.</b> Tahan HP cukup stabil sampai muncul <b>“Berhasil terbaca”</b>.</p>
+    <div class="scan-video-wrap"><video id="scanVideo" playsinline muted></video><div class="scan-frame"></div></div>
+    <p class="scan-hint">${hint}</p>
   </div></div>`;
 }
 function bindScanModal(){
@@ -3589,7 +3585,6 @@ async function startScan(){
     if(!detector) ok=await ensureJsQR();
     if(!ok && !detector){ stopScan(); return; }
 
-    scanDetector=detector;
     scanLastTime=0;
     scanBusy=false;
     scanLastFound="";
@@ -3601,7 +3596,7 @@ async function startScan(){
   }
 }
 
-let scanBusy=false, scanLastTime=0, scanLastFound="", scanCanvas=null, scanAcknowledging=false;
+let scanBusy=false, scanLastTime=0, scanLastFound="", scanCanvas=null;
 
 async function scanLoopRobust(detector){
   if(!state.scanOpen) return;
@@ -3695,7 +3690,7 @@ async function scanLoopRobust(detector){
 
 function stopScan(){
   cancelAnimationFrame(scanRAF); scanRAF=null;
-  scanBusy=false; scanLastFound=""; scanLastTime=0; scanCanvas=null; scanAcknowledging=false; scanDetector=null;
+  scanBusy=false; scanLastFound=""; scanLastTime=0; scanCanvas=null;
   if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; }
   state.scanOpen=false; renderModal();
 }
@@ -3708,26 +3703,6 @@ function startReturnScanFlow(){
   state.scanIgnoreValue=null; state.scanIgnoreUntil=0; state.scanWrongNoticeAt=0; state.scanMode="return-book"; state.scanOpen=true; renderModal();
 }
 function handleScanResult(text){
-  const raw=String(text||"").trim();
-  if(!raw || scanAcknowledging || !state.scanOpen) return;
-
-  // Beri umpan balik yang jelas sebelum scanner berpindah ke langkah berikutnya.
-  // Pengguna tidak perlu menebak apakah QR sudah terbaca atau belum.
-  scanAcknowledging=true;
-  const status=document.getElementById("scanStatus");
-  const frame=document.getElementById("scanFrame");
-  if(status){ status.textContent="✓ Berhasil terbaca"; status.classList.add("success"); }
-  if(frame){ frame.classList.remove("is-reading"); frame.classList.add("is-success"); }
-  try{ if(navigator.vibrate) navigator.vibrate([45,35,70]); }catch(e){}
-
-  // Tahan sebentar agar tanda sukses benar-benar terlihat, lalu lanjutkan proses.
-  setTimeout(()=>{
-    scanAcknowledging=false;
-    processScanResult(raw);
-  },320);
-}
-
-function processScanResult(text){
   const raw=String(text||"").trim();
   const payload=decodeScanPayload(raw);
   const normalized=String(payload.value||raw).trim().toUpperCase();
@@ -3764,41 +3739,22 @@ function processScanResult(text){
   if(mode==="loan-member"){
     // Tahap pertama menerima QR MEMBER maupun QR lama berisi NIS.
     const a=state.anggota.find(x=>String(x.nis||"").trim().toUpperCase()===normalized||String(x.id||"").trim().toUpperCase()===normalized);
-    if(!a){
-      scanAcknowledging=false;
-      const status=document.getElementById("scanStatus"), frame=document.getElementById("scanFrame");
-      if(status){ status.textContent="Kode anggota belum dikenali — coba lagi"; status.classList.remove("success"); }
-      if(frame){ frame.classList.remove("is-success"); frame.classList.add("is-reading"); }
-      showToast(`Kode anggota "${raw}" tidak ditemukan — pastikan QR kartu anggota yang dipindai.`,"rose");
-      scanLastFound="";
-      if(state.scanOpen) scanRAF=requestAnimationFrame(()=>scanLoopRobust(scanDetector));
-      return;
-    }
+    if(!a){ showToast(`Kode anggota "${raw}" tidak ditemukan — pastikan QR kartu anggota yang dipindai.`,"rose"); return; }
 
-    // MODE KASIR: jangan matikan kamera dan jangan render ulang modal.
-    // Kamera tetap hidup sehingga pengguna cukup menggeser kamera dari QR anggota
-    // ke QR buku tanpa menunggu kamera dibuka kembali.
+    // Jangan matikan kamera dan jangan render ulang modal.
+    // Stream kamera tetap hidup seperti scanner kasir; hanya status scan yang diganti.
     state.scanTxnMemberId=a.id;
-    state.scanIgnoreValue=normalized; state.scanIgnoreUntil=Date.now()+1800; state.scanWrongNoticeAt=0;
+    state.scanIgnoreValue=normalized; state.scanIgnoreUntil=0; state.scanWrongNoticeAt=0;
     state.scanMode="loan-book";
-    scanLastFound="";
 
     const titleEl=document.querySelector("#scanBackdrop .modal-title");
-    const hintEl=document.getElementById("scanHint");
-    const headHint=document.querySelector("#scanBackdrop .modal-header .hint");
-    const statusEl=document.getElementById("scanStatus");
-    const frameEl=document.getElementById("scanFrame");
+    const hintEl=document.querySelector("#scanBackdrop .scan-hint");
+    const memberEl=document.querySelector("#scanBackdrop .modal-header .hint");
     if(titleEl) titleEl.textContent="Peminjaman — Scan Buku";
-    if(headHint) headHint.innerHTML=`Anggota: <b>${esc(a.nama)}</b>`;
-    if(hintEl) hintEl.innerHTML='Langkah 2 dari 2: <b>Arahkan kamera ke QR buku.</b><br><b>Tidak perlu cepat.</b> Setelah kode terbaca, akan muncul tanda <b>“Berhasil terbaca”</b>.';
-    if(statusEl){ statusEl.textContent="Silakan arahkan ke QR buku…"; statusEl.classList.remove("success"); }
-    if(frameEl){ frameEl.classList.remove("is-success"); frameEl.classList.add("is-reading"); }
-    scanAcknowledging=false;
+    if(memberEl) memberEl.innerHTML=`Anggota: <b>${esc(a.nama||'-')}</b>`;
+    if(hintEl) hintEl.textContent="✓ Anggota terbaca. Sekarang arahkan kamera ke QR buku. Tidak perlu terburu-buru — kamera tetap aktif sampai buku terbaca.";
 
-    // Beri waktu singkat untuk memindahkan kamera, tetapi tanpa menutup kamera.
-    setTimeout(()=>{
-      if(state.scanOpen && state.scanMode==="loan-book") scanRAF=requestAnimationFrame(()=>scanLoopRobust(scanDetector));
-    },180);
+    showToast(`✓ Anggota ${a.nama} terbaca — silakan arahkan ke QR buku`,"plum");
     return;
   }
 
