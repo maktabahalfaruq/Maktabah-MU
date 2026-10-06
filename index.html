@@ -3533,111 +3533,164 @@ function bindScanModal(){
 }
 async function startScan(){
   try{
-    scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}});
-    const video=document.getElementById("scanVideo"); if(!video) return;
-    video.srcObject=scanStream; await video.play();
-    // Gunakan BarcodeDetector bila tersedia, tetapi tetap siapkan jsQR sebagai fallback.
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      showToast("Kamera tidak didukung di browser ini. Gunakan Chrome/Brave/Safari terbaru.","rose");
+      stopScan(); return;
+    }
+
+    // Kamera belakang + resolusi yang cukup untuk QR/barcode kecil.
+    // Resolusi dibuat ideal, bukan dipaksa, agar HP kelas rendah tidak terbebani.
+    scanStream=await navigator.mediaDevices.getUserMedia({
+      video:{
+        facingMode:{ideal:"environment"},
+        width:{ideal:1920}, height:{ideal:1080},
+        frameRate:{ideal:30, max:30}
+      },
+      audio:false
+    });
+
+    const video=document.getElementById("scanVideo");
+    if(!video){ stopScan(); return; }
+    video.setAttribute("playsinline","");
+    video.setAttribute("autoplay","");
+    video.muted=true;
+    video.srcObject=scanStream;
+    await video.play();
+
+    // Aktifkan continuous autofocus bila browser/HP mendukungnya.
+    try{
+      const track=scanStream.getVideoTracks()[0];
+      const caps=track && track.getCapabilities ? track.getCapabilities() : {};
+      if(caps.focusMode && caps.focusMode.includes("continuous")){
+        await track.applyConstraints({advanced:[{focusMode:"continuous"}]});
+      }
+    }catch(e){ /* beberapa HP tidak mengizinkan focusMode */ }
+
     let detector=null;
     if("BarcodeDetector" in window){
-      try{ detector=new BarcodeDetector({formats:["qr_code","code_128","code_39","ean_13","ean_8","upc_a","upc_e","itf","codabar"]}); }catch(e){ detector=null; }
+      try{
+        // Format yang relevan untuk kartu Maktabah.
+        const supported=typeof BarcodeDetector.getSupportedFormats==="function"
+          ? await BarcodeDetector.getSupportedFormats()
+          : [];
+        const wanted=["qr_code","code_128","code_39","ean_13","ean_8","upc_a","upc_e","itf","codabar"];
+        const formats=supported.length ? wanted.filter(f=>supported.includes(f)) : ["qr_code","code_128","code_39","ean_13","ean_8","upc_a","upc_e","itf","codabar"];
+        detector=new BarcodeDetector({formats});
+      }catch(e){ detector=null; }
     }
-    const ok = await ensureJsQR();
+
+    // jsQR hanya dibutuhkan sebagai fallback ketika BarcodeDetector tidak tersedia.
+    // Ini membuat pembukaan scanner lebih cepat pada Chrome Android yang mendukung native detector.
+    let ok=true;
+    if(!detector) ok=await ensureJsQR();
     if(!ok && !detector){ stopScan(); return; }
+
+    scanLastTime=0;
+    scanBusy=false;
+    scanLastFound="";
     scanLoopRobust(detector);
-  }catch(e){ showToast("Tidak bisa akses kamera — pastikan izin kamera & halaman dibuka lewat HTTPS","rose"); stopScan(); }
+  }catch(e){
+    console.error("Scanner error",e);
+    showToast("Tidak bisa akses kamera — izinkan kamera dan buka website melalui HTTPS.","rose");
+    stopScan();
+  }
 }
+
+let scanBusy=false, scanLastTime=0, scanLastFound="", scanCanvas=null;
 
 async function scanLoopRobust(detector){
-  const video=document.getElementById("scanVideo"); if(!video) return;
-  if(video.readyState<video.HAVE_ENOUGH_DATA || !video.videoWidth){ scanRAF=requestAnimationFrame(()=>scanLoopRobust(detector)); return; }
+  if(!state.scanOpen) return;
+  const video=document.getElementById("scanVideo");
+  if(!video) return;
+
+  const now=performance.now();
+  // Jangan decode lebih cepat dari kemampuan HP. Target sekitar 8–12 kali/detik.
+  if(scanBusy || now-scanLastTime<100){
+    scanRAF=requestAnimationFrame(()=>scanLoopRobust(detector));
+    return;
+  }
+  if(video.readyState<video.HAVE_ENOUGH_DATA || !video.videoWidth){
+    scanRAF=requestAnimationFrame(()=>scanLoopRobust(detector));
+    return;
+  }
+
+  scanBusy=true;
+  scanLastTime=now;
   let found=null;
 
-  // Native detector: cepat jika browser mendukungnya.
-  if(detector){
-    try{
-      const codes=await detector.detect(video);
-      if(codes&&codes.length){
-        const c=codes.find(x=>x.rawValue);
-        if(c) found=String(c.rawValue).trim();
-      }
-    }catch(e){}
-  }
+  try{
+    // 1) Native BarcodeDetector: paling cepat dan paling cocok untuk QR + barcode.
+    if(detector){
+      try{
+        const codes=await detector.detect(video);
+        if(codes && codes.length){
+          const c=codes.find(x=>x && x.rawValue);
+          if(c) found=String(c.rawValue).trim();
+        }
+      }catch(e){ /* lanjut ke fallback */ }
+    }
 
-  // jsQR fallback. QR pada kartu cetak relatif kecil, sehingga kita:
-  // 1) ambil frame kamera dengan resolusi cukup tinggi,
-  // 2) coba seluruh frame,
-  // 3) coba beberapa crop di tengah,
-  // 4) upscale crop agar modul QR lebih mudah dibaca,
-  // 5) coba grayscale/threshold dan inversion.
-  if(!found && typeof jsQR==="function"){
-    try{
+    // 2) jsQR fallback hanya untuk QR. Gunakan satu canvas yang dipakai ulang
+    // agar HP tidak terus membuat canvas/ImageData baru.
+    if(!found && typeof jsQR==="function"){
+      if(!scanCanvas) scanCanvas=document.createElement("canvas");
       const srcW=video.videoWidth, srcH=video.videoHeight;
-      const maxW=1280;
+      // 960 px cukup untuk QR kartu dan jauh lebih ringan daripada 1280 + banyak threshold.
+      const maxW=960;
       const scale=Math.min(1,maxW/srcW);
       const w=Math.max(640,Math.round(srcW*scale));
-      const h=Math.max(480,Math.round(srcH*scale));
-      const canvas=document.createElement("canvas"); canvas.width=w; canvas.height=h;
-      const ctx=canvas.getContext("2d",{willReadFrequently:true});
+      const h=Math.max(360,Math.round(srcH*scale));
+      scanCanvas.width=w; scanCanvas.height=h;
+      const ctx=scanCanvas.getContext("2d",{willReadFrequently:true});
       ctx.drawImage(video,0,0,w,h);
 
-      const tryImage=(imageData, ww, hh)=>{
-        const opts={inversionAttempts:"attemptBoth", canOverwriteImage:false};
-        const r=jsQR(imageData.data,ww,hh,opts);
-        return r&&r.data ? String(r.data).trim() : null;
-      };
+      // Coba area tengah yang lebih kecil terlebih dahulu: lebih cepat dan mengurangi noise.
+      const side=Math.round(Math.min(w,h)*0.72);
+      const sx=Math.round((w-side)/2), sy=Math.round((h-side)/2);
+      const out=Math.min(720,Math.max(560,side));
+      let imageData;
 
-      // Full frame first.
-      found=tryImage(ctx.getImageData(0,0,w,h),w,h);
-
-      if(!found){
-        const side=Math.round(Math.min(w,h)*0.78);
-        const centers=[
-          [Math.round((w-side)/2),Math.round((h-side)/2)],
-          [Math.round((w-side)/2),Math.round((h-side)*0.35)],
-          [Math.round((w-side)*0.35),Math.round((h-side)/2)],
-          [Math.round((w-side)*0.65),Math.round((h-side)/2)]
-        ];
-        for(const [sx,sy] of centers){
-          const crop=document.createElement("canvas");
-          const out=720;
-          crop.width=out; crop.height=out;
-          const cc=crop.getContext("2d",{willReadFrequently:true});
-          cc.imageSmoothingEnabled=true;
-          cc.drawImage(canvas,sx,sy,side,side,0,0,out,out);
-          const cd=cc.getImageData(0,0,out,out);
-          found=tryImage(cd,out,out);
-          if(found) break;
-
-          // Grayscale + contrast/threshold variants.
-          const px=cd.data;
-          const gray=new Uint8ClampedArray(px.length);
-          for(let i=0;i<px.length;i+=4){
-            const g=Math.round(0.299*px[i]+0.587*px[i+1]+0.114*px[i+2]);
-            gray[i]=gray[i+1]=gray[i+2]=g; gray[i+3]=255;
-          }
-          const gd=new ImageData(gray,out,out);
-          found=tryImage(gd,out,out);
-          if(found) break;
-          for(const threshold of [80,110,140,170,200]){
-            const bw=new Uint8ClampedArray(px.length);
-            for(let i=0;i<px.length;i+=4){
-              const g=gray[i] > threshold ? 255 : 0;
-              bw[i]=bw[i+1]=bw[i+2]=g; bw[i+3]=255;
-            }
-            found=tryImage(new ImageData(bw,out,out),out,out);
-            if(found) break;
-          }
-          if(found) break;
-        }
+      if(side < w || side < h){
+        if(scanCanvas._cropCanvas===undefined) scanCanvas._cropCanvas=document.createElement("canvas");
+        const crop=scanCanvas._cropCanvas;
+        crop.width=out; crop.height=out;
+        const cc=crop.getContext("2d",{willReadFrequently:true});
+        cc.imageSmoothingEnabled=true;
+        cc.drawImage(scanCanvas,sx,sy,side,side,0,0,out,out);
+        imageData=cc.getImageData(0,0,out,out);
+        const r=jsQR(imageData.data,out,out,{inversionAttempts:"attemptBoth"});
+        if(r&&r.data) found=String(r.data).trim();
       }
-    }catch(e){ /* lanjut frame berikutnya */ }
+
+      // Bila QR tidak berada di tengah, satu kali full-frame fallback.
+      if(!found){
+        imageData=ctx.getImageData(0,0,w,h);
+        const r=jsQR(imageData.data,w,h,{inversionAttempts:"attemptBoth"});
+        if(r&&r.data) found=String(r.data).trim();
+      }
+    }
+  }catch(e){
+    // Jangan matikan scanner hanya karena satu frame gagal didecode.
+  }finally{
+    scanBusy=false;
   }
 
-  if(found){ handleScanResult(found); return; }
-  scanRAF=requestAnimationFrame(()=>scanLoopRobust(detector));
+  if(found){
+    // Cegah satu kode yang sama diproses berkali-kali oleh frame berturut-turut.
+    const clean=String(found).trim();
+    if(clean && clean!==scanLastFound){
+      scanLastFound=clean;
+      handleScanResult(clean);
+      return;
+    }
+  }
+
+  if(state.scanOpen) scanRAF=requestAnimationFrame(()=>scanLoopRobust(detector));
 }
+
 function stopScan(){
   cancelAnimationFrame(scanRAF); scanRAF=null;
+  scanBusy=false; scanLastFound=""; scanLastTime=0; scanCanvas=null;
   if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; }
   state.scanOpen=false; renderModal();
 }
