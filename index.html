@@ -3516,7 +3516,7 @@ function bindPinModal(){
 }
 
 /* ============ SCAN QR ============ */
-let scanStream=null, scanRAF=null;
+let scanStream=null, scanRAF=null, scanDetector=null;
 function scanModalHTML(){
   const m=state.scanMode;
   let title="Scan Kode Buku", hint="Arahkan kamera ke QR/barcode buku...";
@@ -3589,6 +3589,7 @@ async function startScan(){
     if(!detector) ok=await ensureJsQR();
     if(!ok && !detector){ stopScan(); return; }
 
+    scanDetector=detector;
     scanLastTime=0;
     scanBusy=false;
     scanLastFound="";
@@ -3694,7 +3695,7 @@ async function scanLoopRobust(detector){
 
 function stopScan(){
   cancelAnimationFrame(scanRAF); scanRAF=null;
-  scanBusy=false; scanLastFound=""; scanLastTime=0; scanCanvas=null; scanAcknowledging=false;
+  scanBusy=false; scanLastFound=""; scanLastTime=0; scanCanvas=null; scanAcknowledging=false; scanDetector=null;
   if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; }
   state.scanOpen=false; renderModal();
 }
@@ -3763,11 +3764,42 @@ function processScanResult(text){
   if(mode==="loan-member"){
     // Tahap pertama menerima QR MEMBER maupun QR lama berisi NIS.
     const a=state.anggota.find(x=>String(x.nis||"").trim().toUpperCase()===normalized||String(x.id||"").trim().toUpperCase()===normalized);
-    if(!a){ showToast(`Kode anggota "${raw}" tidak ditemukan — pastikan QR kartu anggota yang dipindai.`,"rose"); return; }
-    stopScan();
+    if(!a){
+      scanAcknowledging=false;
+      const status=document.getElementById("scanStatus"), frame=document.getElementById("scanFrame");
+      if(status){ status.textContent="Kode anggota belum dikenali — coba lagi"; status.classList.remove("success"); }
+      if(frame){ frame.classList.remove("is-success"); frame.classList.add("is-reading"); }
+      showToast(`Kode anggota "${raw}" tidak ditemukan — pastikan QR kartu anggota yang dipindai.`,"rose");
+      scanLastFound="";
+      if(state.scanOpen) scanRAF=requestAnimationFrame(()=>scanLoopRobust(scanDetector));
+      return;
+    }
+
+    // MODE KASIR: jangan matikan kamera dan jangan render ulang modal.
+    // Kamera tetap hidup sehingga pengguna cukup menggeser kamera dari QR anggota
+    // ke QR buku tanpa menunggu kamera dibuka kembali.
     state.scanTxnMemberId=a.id;
-    state.scanIgnoreValue=normalized; state.scanIgnoreUntil=0; state.scanWrongNoticeAt=0;
-    state.scanMode="loan-book"; state.scanOpen=true; renderModal(); return;
+    state.scanIgnoreValue=normalized; state.scanIgnoreUntil=Date.now()+1800; state.scanWrongNoticeAt=0;
+    state.scanMode="loan-book";
+    scanLastFound="";
+
+    const titleEl=document.querySelector("#scanBackdrop .modal-title");
+    const hintEl=document.getElementById("scanHint");
+    const headHint=document.querySelector("#scanBackdrop .modal-header .hint");
+    const statusEl=document.getElementById("scanStatus");
+    const frameEl=document.getElementById("scanFrame");
+    if(titleEl) titleEl.textContent="Peminjaman — Scan Buku";
+    if(headHint) headHint.innerHTML=`Anggota: <b>${esc(a.nama)}</b>`;
+    if(hintEl) hintEl.innerHTML='Langkah 2 dari 2: <b>Arahkan kamera ke QR buku.</b><br><b>Tidak perlu cepat.</b> Setelah kode terbaca, akan muncul tanda <b>“Berhasil terbaca”</b>.';
+    if(statusEl){ statusEl.textContent="Silakan arahkan ke QR buku…"; statusEl.classList.remove("success"); }
+    if(frameEl){ frameEl.classList.remove("is-success"); frameEl.classList.add("is-reading"); }
+    scanAcknowledging=false;
+
+    // Beri waktu singkat untuk memindahkan kamera, tetapi tanpa menutup kamera.
+    setTimeout(()=>{
+      if(state.scanOpen && state.scanMode==="loan-book") scanRAF=requestAnimationFrame(()=>scanLoopRobust(scanDetector));
+    },180);
+    return;
   }
 
   const book=state.books.find(b=>String(b.kode||"").trim().toUpperCase()===normalized);
