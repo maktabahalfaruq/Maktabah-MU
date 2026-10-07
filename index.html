@@ -1199,14 +1199,10 @@ function publicRecommendationHTML(){
   </section>`;
 }
 function publicAnnouncementsHTML(){
-  const items=(Array.isArray(state.settings?.pengumumanMaktabah)?state.settings.pengumumanMaktabah:[]).filter(x=>String(x?.judul||x?.isi||x?.poster||"").trim()).slice(0,4);
-  const x=items[0];
-  return `<section class="public-section" id="publicAnnouncements" style="padding-top:10px">
-    <div class="public-section-head"><div><div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8A7B66;font-weight:800;margin-bottom:4px">Informasi Terbaru</div><h3 class="public-section-title">Pengumuman Maktabah</h3><p class="public-section-desc">Informasi terbaru untuk santri, wali, dan pengunjung Maktabah.</p></div></div>
-    ${x?`<article style="background:#fff;border:1px solid #E7DCC7;border-radius:20px;overflow:hidden;box-shadow:0 8px 24px rgba(72,56,35,.06)">
-      ${x.poster?`<div style="background:#F4F0E8;text-align:center"><img src="${esc(x.poster)}" alt="${esc(x.judul||'Pengumuman Maktabah')}" style="display:block;width:100%;max-height:420px;object-fit:cover;cursor:pointer" data-ann-poster-view="0"></div>`:""}
-      <div style="padding:18px 20px"><div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8A7B66;font-weight:700">${x.tanggal?esc(x.tanggal):"Pengumuman Maktabah"}</div><h4 style="margin:7px 0 6px;color:#294536;font-size:19px">${esc(x.judul||"Pengumuman")}</h4><p style="margin:0;line-height:1.75;font-size:13px;color:#655C4D;white-space:pre-line">${esc(x.isi||"")}</p>${items.length>1?`<div style="margin-top:14px;font-size:11px;color:#8A7B66">${items.length} pengumuman tersedia di Maktabah.</div>`:""}</div>
-    </article>`:`<div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:22px;color:#81745F;font-size:12px">Belum ada pengumuman Maktabah.</div>`}
+  const items=(Array.isArray(state.settings?.pengumumanMaktabah)?state.settings.pengumumanMaktabah:[]).filter(x=>String(x?.judul||x?.isi||"").trim()).slice(0,4);
+  return `<section class="public-section" id="publicAnnouncements">
+    <div class="public-section-head"><div><h3 class="public-section-title">Pengumuman Maktabah</h3><p class="public-section-desc">Informasi terbaru untuk santri, wali, dan pengunjung Maktabah.</p></div></div>
+    ${items.length?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">${items.map((x,i)=>`<article style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;position:relative"><div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8A7B66;font-weight:700">Pengumuman ${i+1}${x.tanggal?` · ${esc(x.tanggal)}`:""}</div><h4 style="margin:7px 0 6px;color:#294536;font-size:16px">${esc(x.judul||"Pengumuman")}</h4><p style="margin:0;line-height:1.7;font-size:12px;color:#655C4D;white-space:pre-line">${esc(x.isi||"")}</p></article>`).join("")}</div>`:`<div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:22px;color:#81745F;font-size:12px">Belum ada pengumuman Maktabah.</div>`}
   </section>`;
 }
 function publicHTML(){
@@ -1348,9 +1344,9 @@ function publicHTML(){
       <div class="public-books">${(popular.length?popular:books.slice(0,4)).map(publicBookCard).join("") || '<div style="color:#81745F;font-size:12px">Belum ada koleksi buku.</div>'}</div>
     </section>
 
-    ${publicAnnouncementsHTML()}
     ${publicRecommendationHTML()}
     ${publicReadingStatsHTML()}
+    ${publicAnnouncementsHTML()}
 
     <div class="public-library-band">
       <div class="public-library-card">
@@ -2200,14 +2196,17 @@ async function uploadBookCover(file, bookId){
   if(!file.type.startsWith("image/")) throw new Error("File cover harus berupa gambar.");
   if(file.size>15*1024*1024) throw new Error("Ukuran gambar maksimal 15 MB.");
 
+  // Semua cover diproses terlebih dahulu agar ukuran file yang masuk
+  // Firebase Storage tetap ringan. Tampilan cover tetap proporsional.
+  const compressedBlob=await makeCoverBlob(file);
+
   // Utamakan Firebase Storage. Jika Storage belum aktif/Rules menolak upload,
   // gunakan fallback terkompresi agar cover tetap bisa tersimpan di data buku.
   if(storage && currentUser){
     try{
-      const ext=(file.type.split("/")[1]||"jpg").replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"jpg";
-      const ref=storage.ref(`maktabahAlFaruq/covers/${bookId}.${ext}`);
-      const metadata={contentType:file.type,cacheControl:"public,max-age=31536000"};
-      const task=ref.put(file,metadata);
+      const ref=storage.ref(`maktabahAlFaruq/covers/${bookId}.jpg`);
+      const metadata={contentType:"image/jpeg",cacheControl:"public,max-age=31536000"};
+      const task=ref.put(compressedBlob,metadata);
       await new Promise((resolve,reject)=>{
         let settled=false;
         const finish=(fn,val)=>{ if(settled) return; settled=true; clearTimeout(timer); fn(val); };
@@ -2220,10 +2219,10 @@ async function uploadBookCover(file, bookId){
     }
   }
 
-  return await makeCoverDataUrl(file);
+  return await blobToCoverDataUrl(compressedBlob);
 }
 
-function makeCoverDataUrl(file){
+function makeCoverBlob(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
     reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
@@ -2242,22 +2241,43 @@ function makeCoverDataUrl(file){
         ctx.fillStyle="#ffffff";
         ctx.fillRect(0,0,w,h);
         ctx.drawImage(img,0,0,w,h);
-        let quality=0.72;
-        let out=canvas.toDataURL("image/jpeg",quality);
-        while(out.length>220000 && quality>0.40){
-          quality-=0.06;
-          out=canvas.toDataURL("image/jpeg",quality);
-        }
-        if(out.length>350000){
-          reject(new Error("Cover terlalu besar setelah diproses. Pilih foto cover yang lebih sederhana."));
-          return;
-        }
-        resolve(out);
+
+        let quality=0.78;
+        const makeBlob=(q,done)=>canvas.toBlob(done,"image/jpeg",q);
+        const attempt=()=>{
+          makeBlob(quality,(blob)=>{
+            if(!blob){ reject(new Error("Foto cover tidak dapat dikompres.")); return; }
+            if(blob.size<=320000 || quality<=0.40){
+              if(blob.size>500000){
+                reject(new Error("Cover terlalu besar setelah diproses. Pilih foto cover yang lebih sederhana."));
+                return;
+              }
+              resolve(blob);
+              return;
+            }
+            quality-=0.06;
+            attempt();
+          });
+        };
+        attempt();
       };
       img.src=reader.result;
     };
     reader.readAsDataURL(file);
   });
+}
+
+function blobToCoverDataUrl(blob){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
+    reader.onload=()=>resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function makeCoverDataUrl(file){
+  return makeCoverBlob(file).then(blobToCoverDataUrl);
 }
 
 function previewBookCover(file){
@@ -2856,71 +2876,17 @@ function settingHTML(){
             <div class="field"><label class="field-label">Pengumuman ${i+1} — Judul</label><input data-ann-title="${i}" value="${esc(x.judul||"")}"/></div>
             <div class="field"><label class="field-label">Isi</label><textarea data-ann-body="${i}" rows="3">${esc(x.isi||"")}</textarea></div>
             <div class="field"><label class="field-label">Tanggal (opsional)</label><input data-ann-date="${i}" value="${esc(x.tanggal||"")}" placeholder="Contoh: 7 Oktober 2026"/></div>
-            <div class="field"><label class="field-label">Poster/Gambar</label><input type="file" accept="image/*" data-ann-poster="${i}"/><div class="hint">${x.poster?"Poster sudah tersimpan. Pilih file baru jika ingin menggantinya.":"Opsional. Poster akan tampil di headline Beranda."}</div>${x.poster?`<div style="margin-top:8px"><img src="${esc(x.poster)}" alt="Poster ${i+1}" style="width:120px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #E7DCC7"></div>`:""}</div>
-            <button type="button" class="btn btn-ghost" data-ann-delete="${i}" style="margin-top:4px;color:#9A4B4B">Hapus pengumuman</button>
           </div>`).join("")}
       </div>
-      <button type="button" class="btn btn-ghost" id="addAnnouncementBtn" style="margin-top:2px">+ Tambah pengumuman</button>
     </div>
     <p class="hint">PIN ini hanya pencegah salah pencet, bukan keamanan data sesungguhnya — siapa pun yang membuka kode sumber halaman bisa melihatnya.</p>
     <button class="btn btn-primary btn-block" id="saveSettingBtn" style="margin-top:14px;">Simpan Pengaturan</button>
   </div>`;
 }
-async function uploadAnnouncementPoster(file, index){
-  if(!file) return null;
-  if(!file.type.startsWith("image/")) throw new Error("Poster harus berupa gambar.");
-  if(file.size>15*1024*1024) throw new Error("Ukuran poster maksimal 15 MB.");
-  if(storage && currentUser){
-    try{
-      const ext=(file.type.split("/")[1]||"jpg").replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"jpg";
-      const ref=storage.ref(`maktabahAlFaruq/announcements/${Date.now()}_${index}.${ext}`);
-      const task=ref.put(file,{contentType:file.type,cacheControl:"public,max-age=31536000"});
-      await new Promise((resolve,reject)=>{
-        let settled=false; const finish=(fn,val)=>{if(settled)return;settled=true;clearTimeout(timer);fn(val);};
-        const timer=setTimeout(()=>{try{task.cancel();}catch(e){}finish(reject,new Error("Storage timeout"));},10000);
-        task.on(firebase.storage.TaskEvent.STATE_CHANGED,()=>{},err=>finish(reject,err),()=>finish(resolve));
-      });
-      return await ref.getDownloadURL();
-    }catch(err){ console.warn("Upload poster Firebase Storage gagal, memakai fallback terkompresi.",err); }
-  }
-  return await makeCoverDataUrl(file);
-}
 function bindSetting(){
   const btn=document.getElementById("saveSettingBtn"); if(!btn) return;
-  document.querySelectorAll("[data-ann-delete]").forEach(b=>b.addEventListener("click",()=>{
+  btn.addEventListener("click", ()=>{
     if(!guardAdmin()) return;
-    const i=Number(b.dataset.annDelete);
-    const arr=Array.isArray(state.settings.pengumumanMaktabah)?state.settings.pengumumanMaktabah.slice(0,4):[];
-    if(!arr[i]) return;
-    if(!confirm("Hapus pengumuman ini?")) return;
-    arr.splice(i,1); state.settings.pengumumanMaktabah=arr; scheduleSave(); render(); showToast("Pengumuman dihapus","rose");
-  }));
-  document.getElementById("addAnnouncementBtn")?.addEventListener("click",()=>{
-    if(!guardAdmin()) return;
-    const arr=Array.isArray(state.settings.pengumumanMaktabah)?state.settings.pengumumanMaktabah.slice(0,4):[];
-    if(arr.length>=4){showToast("Maksimal 4 pengumuman","rose");return;}
-    arr.push({judul:"",isi:"",tanggal:"",poster:""}); state.settings.pengumumanMaktabah=arr; render();
-  });
-  btn.addEventListener("click", async ()=>{
-    if(!guardAdmin()) return;
-    btn.disabled=true; btn.textContent="Menyimpan…";
-    const existing=Array.isArray(state.settings.pengumumanMaktabah)?state.settings.pengumumanMaktabah.slice(0,4):[];
-    const anns=[];
-    try{
-      for(let i=0;i<document.querySelectorAll("[data-ann-title]").length;i++){
-        const old=existing[i]||{};
-        let poster=old.poster||"";
-        const file=document.querySelector(`[data-ann-poster="${i}"]`)?.files?.[0];
-        if(file){ poster=await uploadAnnouncementPoster(file,i); }
-        const item={
-          judul:document.querySelector(`[data-ann-title="${i}"]`)?.value.trim()||"",
-          isi:document.querySelector(`[data-ann-body="${i}"]`)?.value.trim()||"",
-          tanggal:document.querySelector(`[data-ann-date="${i}"]`)?.value.trim()||"",
-          poster:poster||""
-        };
-        if(item.judul||item.isi||item.poster) anns.push(item);
-      }
-    }catch(err){ showToast(err.message||"Poster gagal diunggah","rose"); btn.disabled=false; btn.textContent="Simpan Pengaturan"; return; }
     state.settings = {
       ...state.settings,
       namaMaktabah: document.getElementById("st_nama").value.trim() || state.settings.namaMaktabah,
@@ -2933,7 +2899,11 @@ function bindSetting(){
         judul: el.value.trim(),
         detail: document.querySelector(`[data-guide-detail="${i}"]`)?.value.trim() || ""
       })).filter(x=>x.judul || x.detail),
-      pengumumanMaktabah: anns,
+      pengumumanMaktabah: Array.from(document.querySelectorAll("[data-ann-title]")).map((el,i)=>({
+        judul: el.value.trim(),
+        isi: document.querySelector(`[data-ann-body="${i}"]`)?.value.trim() || "",
+        tanggal: document.querySelector(`[data-ann-date="${i}"]`)?.value.trim() || ""
+      })).filter(x=>x.judul || x.isi),
       lamaPinjamHari: parseInt(document.getElementById("st_lama").value,10) || 7,
       dendaPerHari: parseInt(document.getElementById("st_denda").value,10) || 0,
       pinAdmin: document.getElementById("st_pin").value.trim() || state.settings.pinAdmin,
