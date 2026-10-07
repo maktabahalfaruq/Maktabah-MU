@@ -742,6 +742,9 @@ let state = {
       {judul:"Buku Dibawa",detail:"Setelah transaksi selesai, buku dapat dibawa sesuai ketentuan Maktabah."},
       {judul:"Kembalikan Buku",detail:"Setelah selesai membaca, kembalikan buku kepada petugas beserta kartu peminjaman."}
     ],
+    pengumumanMaktabah:[
+      {judul:"Selamat datang di Maktabah Al-Faruq",isi:"Jelajahi koleksi buku dan temukan bacaan yang mendukung pembelajaran santri.",tanggal:""}
+    ],
     lamaPinjamHari:7, dendaPerHari:200, pinAdmin:"1234" 
   },
   mode:"admin",
@@ -767,6 +770,9 @@ function ensureStateShape(){
   }
   if(!Array.isArray(state.settings.panduanLangkah)){
     state.settings.panduanLangkah=[];
+  }
+  if(!Array.isArray(state.settings.pengumumanMaktabah)){
+    state.settings.pengumumanMaktabah=[];
   }
 }
 ensureStateShape();
@@ -1097,6 +1103,29 @@ const visibleLoans = () => { const deleted=new Set((state.deletedLoanIds||[]).ma
 const activeLoans = () => visibleLoans().filter(l=>l.status==="dipinjam").sort((a,b)=>new Date(a.tanggalJatuhTempo)-new Date(b.tanggalJatuhTempo));
 const historyLoans = () => visibleLoans().filter(l=>l.status==="dikembalikan").sort((a,b)=>new Date(b.tanggalKembali)-new Date(a.tanggalKembali));
 const isOverdue = (l) => new Date(l.tanggalJatuhTempo) < todayDate && l.status==="dipinjam";
+function daysUntilDue(l){
+  if(!l || !l.tanggalJatuhTempo) return null;
+  const due = new Date(l.tanggalJatuhTempo + "T00:00:00");
+  const today = new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate());
+  return Math.round((due - today) / 86400000);
+}
+function normalizeWhatsAppNumber(value){
+  let n = String(value||"").replace(/[^0-9+]/g, "");
+  if(n.startsWith("+62")) n = "62" + n.slice(3);
+  else if(n.startsWith("620")) n = "62" + n.slice(3);
+  else if(n.startsWith("0")) n = "62" + n.slice(1);
+  return n;
+}
+function whatsappReminderUrl(loan){
+  const ang = anggotaById(loan?.anggotaId);
+  const number = normalizeWhatsAppNumber(ang?.noWaWali || ang?.waWali || ang?.whatsappWali || ang?.noHpWali);
+  if(!number || number.length < 10) return "";
+  const days = daysUntilDue(loan);
+  let statusText = days < 0 ? `sudah melewati batas pengembalian selama ${Math.abs(days)} hari` : days === 0 ? "jatuh tempo hari ini" : `akan jatuh tempo dalam ${days} hari`;
+  const wali = ang?.namaWali ? `Bapak/Ibu ${ang.namaWali}` : "Bapak/Ibu Wali Santri";
+  const msg = `Assalamu'alaikum warahmatullahi wabarakatuh.\n\n${wali}, kami mengingatkan bahwa Ananda ${loan.nama} memiliki buku Maktabah yang ${statusText}.\n\nBuku: ${loan.judulBuku}\nJatuh tempo: ${fmt(loan.tanggalJatuhTempo)}\n\nMohon dibantu mengingatkan Ananda untuk mengembalikan buku ke Maktabah.\n\nJazakumullahu khairan.\nMaktabah MI Al-Faruq`;
+  return `https://wa.me/${number}?text=${encodeURIComponent(msg)}`;
+}
 function hariTerlambat(l){
   const ref = l.status==="dikembalikan" ? new Date(l.tanggalKembali) : todayDate;
   const diff = Math.floor((ref - new Date(l.tanggalJatuhTempo)) / 86400000);
@@ -1137,6 +1166,44 @@ function publicBookCard(b, i=0){
       <span class="public-status ${borrowed?'borrowed':''}">${borrowed?'Sedang dipinjam':'Tersedia'}</span>
     </div>
   </article>`;
+}
+function publicReadingStatsHTML(){
+  const returned=state.loans.filter(l=>l.tanggalKembali && l.status==="dikembalikan").length;
+  const active=activeLoans().length;
+  const readers=new Set(state.loans.map(l=>l.anggotaId||l.nis||l.nama).filter(Boolean)).size;
+  const thisMonth=state.loans.filter(l=>{
+    const d=new Date(l.tanggalPinjam); return d.getMonth()===todayDate.getMonth() && d.getFullYear()===todayDate.getFullYear();
+  }).length;
+  const classes={};
+  state.loans.forEach(l=>{ if(l.kelas) classes[l.kelas]=(classes[l.kelas]||0)+1; });
+  const topClass=Object.entries(classes).sort((a,b)=>b[1]-a[1])[0];
+  return `<section class="public-section" id="publicReadingStats">
+    <div class="public-section-head"><div><h3 class="public-section-title">Statistik Membaca</h3><p class="public-section-desc">Gambaran aktivitas literasi Maktabah secara keseluruhan.</p></div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Koleksi</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${state.books.length}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">buku</div></div>
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Peminjaman Bulan Ini</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${thisMonth}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">transaksi</div></div>
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Pembaca Aktif</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${readers}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">anggota</div></div>
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Kelas Teraktif</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${topClass?`Kls ${esc(topClass[0])}`:"—"}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">${topClass?`${topClass[1]} peminjaman`:"belum ada data"}</div></div>
+    </div>
+    <div style="margin-top:12px;padding:14px 16px;background:#FAF8F2;border:1px solid #E7DCC7;border-radius:14px;font-size:12px;color:#756B59">${icon("info",14)} Data statistik bersifat agregat dan tidak menampilkan nama santri.</div>
+  </section>`;
+}
+function publicRecommendationHTML(){
+  const available=state.books.filter(b=>!isDipinjam(b.kode));
+  const source=available.length?available:state.books;
+  const rec=source.map(b=>({...b,_n:state.loans.filter(l=>l.kodeBuku===b.kode).length}))
+    .sort((a,b)=>b._n-a._n || a.kode.localeCompare(b.kode)).slice(0,4);
+  return `<section class="public-section" id="publicRecommendations">
+    <div class="public-section-head"><div><h3 class="public-section-title">Rekomendasi Buku</h3><p class="public-section-desc">Pilihan bacaan yang tersedia dan banyak diminati di Maktabah.</p></div><button class="public-link" data-public-catalog>Lihat semua →</button></div>
+    <div class="public-books">${rec.map(publicBookCard).join("") || '<div style="color:#81745F;font-size:12px">Belum ada koleksi yang dapat direkomendasikan.</div>'}</div>
+  </section>`;
+}
+function publicAnnouncementsHTML(){
+  const items=(Array.isArray(state.settings?.pengumumanMaktabah)?state.settings.pengumumanMaktabah:[]).filter(x=>String(x?.judul||x?.isi||"").trim()).slice(0,4);
+  return `<section class="public-section" id="publicAnnouncements">
+    <div class="public-section-head"><div><h3 class="public-section-title">Pengumuman Maktabah</h3><p class="public-section-desc">Informasi terbaru untuk santri, wali, dan pengunjung Maktabah.</p></div></div>
+    ${items.length?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">${items.map((x,i)=>`<article style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;position:relative"><div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8A7B66;font-weight:700">Pengumuman ${i+1}${x.tanggal?` · ${esc(x.tanggal)}`:""}</div><h4 style="margin:7px 0 6px;color:#294536;font-size:16px">${esc(x.judul||"Pengumuman")}</h4><p style="margin:0;line-height:1.7;font-size:12px;color:#655C4D;white-space:pre-line">${esc(x.isi||"")}</p></article>`).join("")}</div>`:`<div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:22px;color:#81745F;font-size:12px">Belum ada pengumuman Maktabah.</div>`}
+  </section>`;
 }
 function publicHTML(){
   const books=[...state.books].sort((a,b)=>a.kode.localeCompare(b.kode));
@@ -1276,6 +1343,10 @@ function publicHTML(){
       </div>
       <div class="public-books">${(popular.length?popular:books.slice(0,4)).map(publicBookCard).join("") || '<div style="color:#81745F;font-size:12px">Belum ada koleksi buku.</div>'}</div>
     </section>
+
+    ${publicRecommendationHTML()}
+    ${publicReadingStatsHTML()}
+    ${publicAnnouncementsHTML()}
 
     <div class="public-library-band">
       <div class="public-library-card">
@@ -1678,6 +1749,7 @@ function dashboardHTML(){
       ${statCard("Buku Hilang/Rusak", rusakHilang, "#8C6239", "!")}
     </div>
     ${overdueCount>0 ? `<div class="alert-box alert-rose">${icon("alertTriangle",15)} ${overdueCount} peminjaman sudah melewati jatuh tempo — cek Transaksi ▸ Pengembalian.</div>` : ""}
+    ${pengingatPengembalianHTML()}
     <div class="dash-grid">
       <div class="panel"><h3 class="panel-title">Peminjaman per Kelas</h3>
         ${perKelas.length===0 ? `<div class="muted">Belum ada data.</div>` : `<div class="chart-bars">${perKelas.map(p=>`
@@ -1711,6 +1783,33 @@ function navigateTo(group, sub){
   state.sub = sub || null;
   render();
 }
+function pengingatPengembalianHTML(){
+  const rows = activeLoans().filter(l=>{ const d=daysUntilDue(l); return d!==null && d<=3; });
+  if(!rows.length) return `<div class="panel" style="margin-bottom:18px;"><div class="row-between"><div><h3 class="panel-title" style="margin:0 0 4px;">Pengingat Pengembalian</h3><p class="hint" style="margin:0;">Belum ada buku yang jatuh tempo dalam 3 hari ke depan.</p></div></div></div>`;
+  const overdue=rows.filter(l=>daysUntilDue(l)<0).length;
+  const today=rows.filter(l=>daysUntilDue(l)===0).length;
+  const soon=rows.filter(l=>daysUntilDue(l)>0).length;
+  return `<div class="panel" style="margin-bottom:18px;">
+    <div class="row-between" style="align-items:flex-start;gap:12px;flex-wrap:wrap;">
+      <div><h3 class="panel-title" style="margin:0 0 4px;">Pengingat Pengembalian</h3><p class="hint" style="margin:0;">Menampilkan buku H-3 sampai yang sudah terlambat.</p></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${soon?`<span class="badge badge-gold">${soon} akan jatuh tempo</span>`:""}
+        ${today?`<span class="badge badge-rose">${today} jatuh tempo hari ini</span>`:""}
+        ${overdue?`<span class="badge badge-rose">${overdue} terlambat</span>`:""}
+      </div>
+    </div>
+    <div class="table-wrap" style="margin-top:12px;"><table class="data-table"><thead><tr><th>Santri</th><th>Buku</th><th>Jatuh Tempo</th><th>Status</th><th>Wali</th><th></th></tr></thead><tbody>
+      ${rows.map(l=>{
+        const d=daysUntilDue(l);
+        const ang=anggotaById(l.anggotaId)||{};
+        const wa=whatsappReminderUrl(l);
+        const status=d<0?`<span class="badge badge-rose">Terlambat ${Math.abs(d)} hari</span>`:d===0?`<span class="badge badge-rose">Hari ini</span>`:`<span class="badge badge-gold">H-${d}</span>`;
+        return `<tr><td><b>${esc(l.nama)}</b><div class="hint">Kelas ${esc(l.kelas||ang.kelas||"-")}</div></td><td>${esc(l.judulBuku)}</td><td>${fmt(l.tanggalJatuhTempo)}</td><td>${status}</td><td>${esc(ang.namaWali||"Belum diisi")}</td><td>${wa?`<a class="btn btn-primary btn-sm" href="${wa}" target="_blank" rel="noopener">${icon("messageCircle",14)} WA Wali</a>`:`<button class="btn btn-outline btn-sm" disabled>${icon("phone",14)} No. WA</button>`}</td></tr>`;
+      }).join("")}
+    </tbody></table></div>
+  </div>`;
+}
+
 function bindDashboardExtras(){
   document.querySelectorAll("[data-goto]").forEach(t=>t.addEventListener("click", ()=>navigateTo(t.dataset.goto, t.dataset.gotosub)));
   const hb = document.getElementById("heroSearchBtn");
@@ -1771,7 +1870,7 @@ function bindAnggota(){
   const sort = document.getElementById("anggotaSort");
   if(sort) sort.addEventListener("change", renderAnggotaTable);
   document.getElementById("btnScanAnggota").addEventListener("click", ()=>{ state.scanMode="member"; state.scanOpen=true; renderModal(); });
-  document.getElementById("btnTambahAnggota").addEventListener("click", ()=>openAnggotaModal("add", {nis:"", nama:"", kelas:"1", lp:"L", alamat:"", tglDaftar:iso(todayDate)}));
+  document.getElementById("btnTambahAnggota").addEventListener("click", ()=>openAnggotaModal("add", {nis:"", nama:"", kelas:"1", lp:"L", alamat:"", namaWali:"", noWaWali:"", tglDaftar:iso(todayDate)}));
   renderAnggotaTable();
 }
 function openAnggotaModal(mode, data){ state.anggotaModal={mode, data:{...data}}; renderModal(); }
@@ -1783,6 +1882,8 @@ function saveAnggotaFromForm(){
     kelas: document.getElementById("ag_kelas").value,
     lp: document.getElementById("ag_lp").value,
     alamat: document.getElementById("ag_alamat").value.trim(),
+    namaWali: document.getElementById("ag_namaWali").value.trim(),
+    noWaWali: document.getElementById("ag_noWaWali").value.trim(),
     tglDaftar: document.getElementById("ag_tgl").value,
   };
   if(!d.nama){ showToast("Nama anggota tidak boleh kosong", "rose"); return; }
@@ -2742,6 +2843,18 @@ function settingHTML(){
       </div>
       <div class="hint">Contoh: “Serahkan Kartu” → “Serahkan kartu peminjaman kepada petugas untuk dicatat.”</div>
     </div>
+    <div class="field">
+      <label class="field-label">Pengumuman Maktabah</label>
+      <div class="hint" style="margin-bottom:10px">Pengumuman ini tampil di Beranda. Kosongkan judul dan isi jika tidak ingin menampilkan pengumuman tersebut.</div>
+      <div id="announcementEditor">
+        ${(Array.isArray(st.pengumumanMaktabah)?st.pengumumanMaktabah:[]).slice(0,4).map((x,i)=>`
+          <div style="border:1px solid #E7DCC7;border-radius:12px;padding:12px;margin-bottom:10px">
+            <div class="field"><label class="field-label">Pengumuman ${i+1} — Judul</label><input data-ann-title="${i}" value="${esc(x.judul||"")}"/></div>
+            <div class="field"><label class="field-label">Isi</label><textarea data-ann-body="${i}" rows="3">${esc(x.isi||"")}</textarea></div>
+            <div class="field"><label class="field-label">Tanggal (opsional)</label><input data-ann-date="${i}" value="${esc(x.tanggal||"")}" placeholder="Contoh: 7 Oktober 2026"/></div>
+          </div>`).join("")}
+      </div>
+    </div>
     <p class="hint">PIN ini hanya pencegah salah pencet, bukan keamanan data sesungguhnya — siapa pun yang membuka kode sumber halaman bisa melihatnya.</p>
     <button class="btn btn-primary btn-block" id="saveSettingBtn" style="margin-top:14px;">Simpan Pengaturan</button>
   </div>`;
@@ -2762,6 +2875,11 @@ function bindSetting(){
         judul: el.value.trim(),
         detail: document.querySelector(`[data-guide-detail="${i}"]`)?.value.trim() || ""
       })).filter(x=>x.judul || x.detail),
+      pengumumanMaktabah: Array.from(document.querySelectorAll("[data-ann-title]")).map((el,i)=>({
+        judul: el.value.trim(),
+        isi: document.querySelector(`[data-ann-body="${i}"]`)?.value.trim() || "",
+        tanggal: document.querySelector(`[data-ann-date="${i}"]`)?.value.trim() || ""
+      })).filter(x=>x.judul || x.isi),
       lamaPinjamHari: parseInt(document.getElementById("st_lama").value,10) || 7,
       dendaPerHari: parseInt(document.getElementById("st_denda").value,10) || 0,
       pinAdmin: document.getElementById("st_pin").value.trim() || state.settings.pinAdmin,
@@ -3439,6 +3557,7 @@ function anggotaModalHTML(){
     <div class="field-row"><div class="field"><label class="field-label">L/P</label><select id="ag_lp"><option value="L" ${d.lp==='L'?'selected':''}>Laki-laki</option><option value="P" ${d.lp==='P'?'selected':''}>Perempuan</option></select></div>
       <div class="field"><label class="field-label">Tanggal Daftar</label><input type="date" id="ag_tgl" value="${esc(d.tglDaftar)}"/></div></div>
     <div class="field"><label class="field-label">Alamat (opsional)</label><input id="ag_alamat" value="${esc(d.alamat||'')}"/></div>
+    <div class="field-row"><div class="field"><label class="field-label">Nama Wali (opsional)</label><input id="ag_namaWali" value="${esc(d.namaWali||'')}" placeholder="Nama ayah/ibu/wali"/></div><div class="field"><label class="field-label">No. WhatsApp Wali (opsional)</label><input id="ag_noWaWali" type="tel" inputmode="tel" value="${esc(d.noWaWali||d.waWali||d.whatsappWali||d.noHpWali||'')}" placeholder="08xxxxxxxxxx"/></div></div>
     <button class="btn btn-primary btn-block" id="saveAgBtn" style="margin-top:16px;">Simpan</button>
   </div></div>`;
 }
