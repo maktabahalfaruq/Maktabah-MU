@@ -2196,17 +2196,21 @@ async function uploadBookCover(file, bookId){
   if(!file.type.startsWith("image/")) throw new Error("File cover harus berupa gambar.");
   if(file.size>15*1024*1024) throw new Error("Ukuran gambar maksimal 15 MB.");
 
-  // Semua cover diproses terlebih dahulu agar ukuran file yang masuk
-  // Firebase Storage tetap ringan. Tampilan cover tetap proporsional.
-  const compressedBlob=await makeCoverBlob(file);
+  // Cover kecil langsung diunggah tanpa diproses ulang.
+  // Cover besar baru diperkecil agar upload ke Firebase lebih cepat.
+  let uploadFile=file;
+  if(file.size>150*1024){
+    uploadFile=await compressCoverForUpload(file);
+  }
 
   // Utamakan Firebase Storage. Jika Storage belum aktif/Rules menolak upload,
   // gunakan fallback terkompresi agar cover tetap bisa tersimpan di data buku.
   if(storage && currentUser){
     try{
-      const ref=storage.ref(`maktabahAlFaruq/covers/${bookId}.jpg`);
-      const metadata={contentType:"image/jpeg",cacheControl:"public,max-age=31536000"};
-      const task=ref.put(compressedBlob,metadata);
+      const ext=(uploadFile.type.split("/")[1]||"jpg").replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"jpg";
+      const ref=storage.ref(`maktabahAlFaruq/covers/${bookId}.${ext}`);
+      const metadata={contentType:uploadFile.type,cacheControl:"public,max-age=31536000"};
+      const task=ref.put(uploadFile,metadata);
       await new Promise((resolve,reject)=>{
         let settled=false;
         const finish=(fn,val)=>{ if(settled) return; settled=true; clearTimeout(timer); fn(val); };
@@ -2219,10 +2223,63 @@ async function uploadBookCover(file, bookId){
     }
   }
 
-  return await blobToCoverDataUrl(compressedBlob);
+  return await makeCoverDataUrl(uploadFile);
 }
 
-function makeCoverBlob(file){
+function compressCoverForUpload(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
+    reader.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error("Foto cover tidak dapat diproses."));
+      img.onload=()=>{
+        let maxW=400, maxH=600;
+        const drawAndCompress=()=>{
+          const scale=Math.min(1,maxW/img.naturalWidth,maxH/img.naturalHeight);
+          const w=Math.max(1,Math.round(img.naturalWidth*scale));
+          const h=Math.max(1,Math.round(img.naturalHeight*scale));
+          const canvas=document.createElement("canvas");
+          canvas.width=w; canvas.height=h;
+          const ctx=canvas.getContext("2d");
+          if(!ctx){ reject(new Error("Browser tidak mendukung pemrosesan foto cover.")); return; }
+          ctx.fillStyle="#ffffff";
+          ctx.fillRect(0,0,w,h);
+          ctx.drawImage(img,0,0,w,h);
+
+          let quality=0.82;
+          const tryCompress=()=>{
+            canvas.toBlob((blob)=>{
+              if(!blob){ reject(new Error("Foto cover tidak dapat dikompres.")); return; }
+              if(blob.size<=150*1024){
+                resolve(new File([blob],(file.name||"cover").replace(/\.[^.]+$/,".jpg"),{type:"image/jpeg",lastModified:Date.now()}));
+                return;
+              }
+              if(quality>0.40){
+                quality=Math.max(0.40,quality-0.06);
+                tryCompress();
+                return;
+              }
+              if(maxW>160 && maxH>240){
+                maxW=Math.max(160,Math.floor(maxW*0.90));
+                maxH=Math.max(240,Math.floor(maxH*0.90));
+                drawAndCompress();
+                return;
+              }
+              reject(new Error("Cover terlalu besar setelah diproses. Pilih foto cover yang lebih sederhana."));
+            },"image/jpeg",quality);
+          };
+          tryCompress();
+        };
+        drawAndCompress();
+      };
+      img.src=reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function makeCoverDataUrl(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
     reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
@@ -2241,43 +2298,22 @@ function makeCoverBlob(file){
         ctx.fillStyle="#ffffff";
         ctx.fillRect(0,0,w,h);
         ctx.drawImage(img,0,0,w,h);
-
-        let quality=0.78;
-        const makeBlob=(q,done)=>canvas.toBlob(done,"image/jpeg",q);
-        const attempt=()=>{
-          makeBlob(quality,(blob)=>{
-            if(!blob){ reject(new Error("Foto cover tidak dapat dikompres.")); return; }
-            if(blob.size<=320000 || quality<=0.40){
-              if(blob.size>500000){
-                reject(new Error("Cover terlalu besar setelah diproses. Pilih foto cover yang lebih sederhana."));
-                return;
-              }
-              resolve(blob);
-              return;
-            }
-            quality-=0.06;
-            attempt();
-          });
-        };
-        attempt();
+        let quality=0.72;
+        let out=canvas.toDataURL("image/jpeg",quality);
+        while(out.length>220000 && quality>0.40){
+          quality-=0.06;
+          out=canvas.toDataURL("image/jpeg",quality);
+        }
+        if(out.length>350000){
+          reject(new Error("Cover terlalu besar setelah diproses. Pilih foto cover yang lebih sederhana."));
+          return;
+        }
+        resolve(out);
       };
       img.src=reader.result;
     };
     reader.readAsDataURL(file);
   });
-}
-
-function blobToCoverDataUrl(blob){
-  return new Promise((resolve,reject)=>{
-    const reader=new FileReader();
-    reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
-    reader.onload=()=>resolve(reader.result);
-    reader.readAsDataURL(blob);
-  });
-}
-
-function makeCoverDataUrl(file){
-  return makeCoverBlob(file).then(blobToCoverDataUrl);
 }
 
 function previewBookCover(file){
