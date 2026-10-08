@@ -2226,8 +2226,8 @@ async function uploadBookCover(file, bookId){
   // Cover kecil langsung diunggah tanpa diproses ulang.
   // Cover besar baru diperkecil agar upload ke Firebase lebih cepat.
   let uploadFile=file;
-  if(file.size>150*1024){
-    uploadFile=await compressCoverForUpload(file);
+  if(file.size>70*1024){
+    uploadFile=await compressCoverForUpload(file,70);
   }
 
   // Utamakan Firebase Storage. Jika Storage belum aktif/Rules menolak upload,
@@ -2253,7 +2253,7 @@ async function uploadBookCover(file, bookId){
   return await makeCoverDataUrl(uploadFile);
 }
 
-function compressCoverForUpload(file){
+function compressCoverForUpload(file,targetKb=70){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
     reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
@@ -2261,7 +2261,7 @@ function compressCoverForUpload(file){
       const img=new Image();
       img.onerror=()=>reject(new Error("Foto cover tidak dapat diproses."));
       img.onload=()=>{
-        const TARGET=150*1024;
+        const TARGET=targetKb*1024;
         let maxW=400, maxH=600;
 
         const finishWithBlob=(blob)=>{
@@ -2331,40 +2331,63 @@ function compressCoverForUpload(file){
   });
 }
 function makeCoverDataUrl(file){
-  return new Promise((resolve,reject)=>{
+  if(file && file.size<=70*1024){
+    return new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
+      reader.onload=()=>resolve(reader.result);
+      reader.readAsDataURL(file);
+    });
+  }
+  return compressCoverForUpload(file,70).then(compressed=>new Promise((resolve,reject)=>{
     const reader=new FileReader();
     reader.onerror=()=>reject(new Error("Foto cover tidak dapat dibaca."));
-    reader.onload=()=>{
-      const img=new Image();
-      img.onerror=()=>reject(new Error("Foto cover tidak dapat diproses."));
-      img.onload=()=>{
-        const maxW=500, maxH=720;
-        const scale=Math.min(1,maxW/img.naturalWidth,maxH/img.naturalHeight);
-        const w=Math.max(1,Math.round(img.naturalWidth*scale));
-        const h=Math.max(1,Math.round(img.naturalHeight*scale));
-        const canvas=document.createElement("canvas");
-        canvas.width=w; canvas.height=h;
-        const ctx=canvas.getContext("2d");
-        if(!ctx){ reject(new Error("Browser tidak mendukung pemrosesan foto cover.")); return; }
-        ctx.fillStyle="#ffffff";
-        ctx.fillRect(0,0,w,h);
-        ctx.drawImage(img,0,0,w,h);
-        let quality=0.72;
-        let out=canvas.toDataURL("image/jpeg",quality);
-        while(out.length>220000 && quality>0.40){
-          quality-=0.06;
-          out=canvas.toDataURL("image/jpeg",quality);
-        }
-        if(out.length>350000){
-          reject(new Error("Cover terlalu besar setelah diproses. Pilih foto cover yang lebih sederhana."));
-          return;
-        }
-        resolve(out);
-      };
-      img.src=reader.result;
-    };
-    reader.readAsDataURL(file);
-  });
+    reader.onload=()=>resolve(reader.result);
+    reader.readAsDataURL(compressed);
+  }));
+}
+
+async function optimizeAllBookCovers(){
+  if(!guardAdmin()) return;
+  if(!storage || !currentUser){
+    showToast("Firebase Storage belum siap. Tidak dapat mengoptimalkan cover lama.","rose");
+    return;
+  }
+  const candidates=state.books.filter(b=>b && b.coverUrl);
+  if(!candidates.length){
+    showToast("Belum ada buku yang memiliki cover.","rose");
+    return;
+  }
+  if(!confirm(`Optimalkan ${candidates.length} cover buku menjadi maksimal 70 KB? Proses ini hanya mengubah file cover, data buku lainnya tetap.`)) return;
+  const btn=document.getElementById("btnOptimizeAllCovers");
+  if(btn){btn.disabled=true;btn.textContent="Mengoptimalkan cover...";}
+  let done=0, optimized=0, skipped=0, failed=0;
+  try{
+    for(const book of candidates){
+      done++;
+      if(btn) btn.textContent=`Mengoptimalkan ${done}/${candidates.length} cover...`;
+      try{
+        const response=await fetch(book.coverUrl,{cache:"no-store"});
+        if(!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob=await response.blob();
+        if(blob.size<=70*1024){ skipped++; continue; }
+        const file=new File([blob],`${book.id}.jpg`,{type:blob.type.startsWith("image/")?blob.type:"image/jpeg",lastModified:Date.now()});
+        const newUrl=await uploadBookCover(file,book.id);
+        state.books=state.books.map(b=>b.id===book.id?{...b,coverUrl:newUrl}:b);
+        optimized++;
+      }catch(err){
+        failed++;
+        console.warn("Gagal mengoptimalkan cover",book.id,err);
+      }
+    }
+    scheduleSave();
+    await new Promise(r=>setTimeout(r,400));
+    showToast(`Optimasi selesai: ${optimized} dikompres, ${skipped} sudah ≤70 KB, ${failed} gagal.`,failed?"rose":"plum");
+    renderContent();
+  }finally{
+    const b=document.getElementById("btnOptimizeAllCovers");
+    if(b){b.disabled=false;b.innerHTML=`${icon("upload",15)} Optimalkan Semua Cover (≤70 KB)`;}
+  }
 }
 
 function previewBookCover(file){
@@ -3078,6 +3101,8 @@ function impexpHTML(){
     <p class="hint" style="margin-bottom:10px;">Format yang didukung: CSV, Excel (.xlsx/.xls), PDF, dan Word (.docx). Sistem sekarang juga mengenali format <b>BUKU BESAR MAKTABAH</b> dari PDF/Word dan tidak lagi bergantung pada header yang harus persis sama.</p>
     <p class="hint" style="margin-bottom:10px;">Kolom standar: kode, kategori, judul, penyusun/pengarang, penerbit, tahun terbit, sumber, tanggal diterima, rak, keterangan.</p>
     <button class="btn btn-outline btn-block" id="exportBukuExcel">${icon("download",15)} Export Data Buku (.xlsx)</button>
+    <button class="btn btn-outline btn-block" id="btnOptimizeAllCovers" style="margin-top:8px;">${icon("upload",15)} Optimalkan Semua Cover (≤70 KB)</button>
+    <p class="hint" style="margin:7px 0 12px;">Cover lama yang lebih dari 70 KB akan dikompres ulang. Cover yang sudah ≤70 KB tidak diproses.</p>
     <div class="field" style="margin-top:12px;"><label class="field-label">Import Data Buku</label><input type="file" id="importBukuFile" accept=".csv,.xlsx,.xls,.pdf,.docx"/></div>
 
     <hr style="border:none;border-top:1px dashed var(--line);margin:18px 0;"/>
@@ -3438,6 +3463,8 @@ async function importMembersFromFile(file){
 }
 
 function bindImpexp(){
+  const optimizeBtn=document.getElementById("btnOptimizeAllCovers");
+  if(optimizeBtn) optimizeBtn.addEventListener("click", optimizeAllBookCovers);
   const eb=document.getElementById("exportBukuExcel");
   if(eb) eb.addEventListener("click", ()=>{
     const rows=[["kode","kategori","judul","penyusun","penerbit","tahunTerbit","sumber","tanggalDiterima","rak","keterangan"],...state.books.map(b=>[b.kode,b.kategori,b.judul,b.penyusun,b.penerbit,b.tahunTerbit,b.sumber,b.tanggalDiterima,b.rak,b.keterangan])];
