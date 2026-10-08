@@ -467,23 +467,31 @@ svg[width]{display:inline-block;flex:0 0 auto}
 /* ===== Public catalog real-cover presentation ===== */
 .public-book-cover.has-real-cover{
   height:260px;
-  padding:0;
+  padding:8px 10px;
   background:#fff;
   box-shadow:none;
   display:flex;
   align-items:center;
   justify-content:center;
+  overflow:hidden;
 }
 .public-book-cover.has-real-cover::before,
 .public-book-cover.has-real-cover::after{display:none;}
 .public-book-cover.has-real-cover img{
-  width:100% !important;
-  height:100% !important;
+  width:auto !important;
+  height:auto !important;
+  max-width:100% !important;
+  max-height:100% !important;
   object-fit:contain !important;
   display:block;
+  margin:auto;
+  border-radius:3px;
+}
+@media(max-width:850px){
+  .public-book-cover.has-real-cover{height:230px;padding:7px 8px;}
 }
 @media(max-width:520px){
-  .public-book-cover.has-real-cover{height:220px;}
+  .public-book-cover.has-real-cover{height:220px;padding:6px 7px;}
 }
 
 /* ===== Soft visual refresh + public hero slideshow ===== */
@@ -583,6 +591,30 @@ svg[width]{display:inline-block;flex:0 0 auto}
   .public-hero-progress{display:none;}
 }
 
+</style>
+
+<style id="mobile-ux-polish">
+@media (max-width:520px){
+  /* Mobile UX polish: keep the existing visual identity, only tighten spacing and proportions. */
+  .public-hero-card{min-height:500px;}
+  .public-hero-content{padding:26px 18px 22px;}
+  .public-hero h2{font-size:36px;line-height:1.02;margin:12px 0 11px;}
+  .public-hero p{font-size:12px;line-height:1.55;margin-bottom:14px;}
+  .public-section{padding-top:30px;padding-bottom:30px;}
+  .public-section-head{margin-bottom:16px;}
+  .public-section-head .public-link{margin-top:7px;}
+  .public-section-title{font-size:27px;line-height:1.08;}
+  .public-section-desc{font-size:12px;line-height:1.5;}
+  .public-quick,.public-books,.public-catalog-grid{gap:9px;}
+  .public-book-cover.has-real-cover{height:155px;padding:6px 8px;}
+  .public-book-cover{height:145px;}
+  .public-public-footer{margin-top:10px;}
+  .public-footer-inner{padding:26px 18px 24px;gap:18px;}
+  .public-footer-title{font-size:17px;}
+  .public-footer-copy{font-size:10.5px;line-height:1.6;}
+  .public-footer-actions{gap:7px;flex-wrap:wrap;}
+  .public-footer-actions button{padding:8px 11px;font-size:10.5px;}
+}
 </style>
 </head>
 <body>
