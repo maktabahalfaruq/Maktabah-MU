@@ -519,6 +519,13 @@ svg[width]{display:inline-block;flex:0 0 auto}
 .public-hero-slide.is-active{opacity:1;pointer-events:auto;transform:scale(1);z-index:2;}
 .public-hero-image{position:absolute;inset:0;background-position:center;background-size:cover;background-repeat:no-repeat;transform:scale(1.02);transition:transform 5.8s ease;}
 .public-hero-slide.is-active .public-hero-image{transform:scale(1.055);}
+.public-catalog-hero-slide .public-hero-image{background-position:center;background-size:cover;}
+.public-catalog-hero-slide::before{background:linear-gradient(90deg,rgba(255,248,231,.98) 0%,rgba(255,248,231,.93) 48%,rgba(255,248,231,.62) 70%,rgba(255,248,231,.18) 100%);}
+.public-catalog-hero-actions{display:flex;flex-wrap:wrap;gap:10px;max-width:560px;}
+.public-catalog-hero-actions button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:11px 16px;border:1px solid #345640;border-radius:12px;background:#294536;color:#fff;font-weight:700;cursor:pointer;}
+.public-catalog-hero-actions button:first-child{background:rgba(255,255,255,.88);color:#294536;}
+.public-catalog-hero-actions button:hover{filter:brightness(.97);transform:translateY(-1px);}
+@media(max-width:640px){.public-catalog-hero-actions{display:grid;grid-template-columns:1fr;}.public-catalog-hero-actions button{width:100%;white-space:normal;}}
 .public-hero-slide::before{
   content:"";position:absolute;inset:0;z-index:1;
   background:
@@ -1384,6 +1391,19 @@ function publicHTML(){
               <button class="public-hero-cta" type="button" data-public-catalog>Lihat koleksi buku</button>
             </div>
           </article>
+          <article class="public-hero-slide public-catalog-hero-slide" data-hero-slide="4">
+            <div class="public-hero-image" aria-hidden="true"></div>
+            <div class="public-hero-content">
+              <span class="public-kicker">KATALOG CETAK · EDISI TERBARU</span>
+              <h2>Seluruh koleksi dalam <span>satu katalog.</span></h2>
+              <p>Jelajahi koleksi Maktabah secara online atau simpan katalog PDF untuk dibaca dan dicetak kapan saja.</p>
+              <div class="public-hero-tags"><span>Lengkap &amp; tertata</span><span>Siap cetak A4</span><span>Diperbarui dari data buku</span></div>
+              <div class="public-search public-catalog-hero-actions">
+                <button type="button" data-hero-catalog>${icon("bookOpen",15)} Lihat katalog online</button>
+                <button type="button" data-hero-download-catalog>${icon("download",15)} Unduh PDF katalog</button>
+              </div>
+            </div>
+          </article>
         </div>
         <button class="public-hero-arrow prev" type="button" aria-label="Slide sebelumnya" data-hero-prev>‹</button>
         <button class="public-hero-arrow next" type="button" aria-label="Slide berikutnya" data-hero-next>›</button>
@@ -1392,6 +1412,7 @@ function publicHTML(){
           <button type="button" data-hero-dot="1" aria-label="Slide 2"></button>
           <button type="button" data-hero-dot="2" aria-label="Slide 3"></button>
           <button type="button" data-hero-dot="3" aria-label="Slide 4"></button>
+          <button type="button" data-hero-dot="4" aria-label="Slide 5: Katalog Cetak"></button>
         </div>
         <div class="public-hero-progress"><span></span></div>
       </div>
@@ -1529,6 +1550,11 @@ function bindPublicSlideshow(){
     const target=slides[i]?.querySelector(".public-hero-image");
     if(target && img?.src) target.style.backgroundImage=`url("${img.src}")`;
   });
+  const catalogHeroImage=slides[4]?.querySelector(".public-hero-image");
+  const availableCover=document.querySelector(".public-books img, .public-catalog-grid img, .public-gallery-card img");
+  if(catalogHeroImage && availableCover?.src && !catalogHeroImage.style.backgroundImage) catalogHeroImage.style.backgroundImage=`url("${availableCover.src}")`;
+  slides[4]?.querySelector("[data-hero-download-catalog]")?.addEventListener("click",()=>downloadPrintableCatalog());
+  slides[4]?.querySelector("[data-hero-catalog]")?.addEventListener("click",()=>document.querySelector("[data-public-catalog]")?.click());
   let current=0, timer=null, paused=false;
   function paint(index){
     current=(index+slides.length)%slides.length;
