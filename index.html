@@ -1141,8 +1141,17 @@ async function loadData(){
         unbindPrivateRealtime();
         currentRole='petugas';
         state.mode='petugas';
-        state.view='public';
-        if(location.hash==="#admin") location.hash="";
+
+        // Jangan mengembalikan pengguna ke halaman publik jika callback awal
+        // Firebase selesai ketika halaman Area Petugas sedang dibuka.
+        // Ini mencegah navigasi "mental balik" saat sesi sedang diperiksa.
+        if(location.hash==="#admin"){
+          state.view='admin';
+          state.authModal=true;
+        }else{
+          state.view='public';
+          state.authModal=null;
+        }
         render(); renderModal();
       }
     });
