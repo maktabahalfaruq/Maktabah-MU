@@ -1145,9 +1145,13 @@ async function loadData(){
         // Jangan mengembalikan pengguna ke halaman publik jika callback awal
         // Firebase selesai ketika halaman Area Petugas sedang dibuka.
         // Ini mencegah navigasi "mental balik" saat sesi sedang diperiksa.
-        if(location.hash==="#admin"){
+        if(location.hash==="#admin" || state.view==="admin"){
+          // Pertahankan Area Petugas jika callback sesi Firebase selesai
+          // setelah pengguna membuka area ini, meskipun hash berubah/terhapus
+          // oleh browser mobile selama proses navigasi.
           state.view='admin';
           state.authModal=true;
+          if(location.hash!="#admin") history.replaceState(null,"",location.pathname+location.search+"#admin");
         }else{
           state.view='public';
           state.authModal=null;
@@ -4357,8 +4361,14 @@ window.addEventListener("hashchange", ()=>{
   if(location.hash==="#admin"){
     state.view="admin";
     if(!currentUser) state.authModal=true;
-  }else{
+  }else if(state.view!=="admin"){
+    // Perubahan hash dari halaman publik tetap mengikuti perilaku semula.
+    // Jika Area Petugas sedang aktif, jangan keluarkan pengguna ke publik
+    // akibat perubahan hash yang tidak disengaja pada browser/perangkat mobile.
     state.view="public"; state.authModal=null;
+  }else if(!currentUser){
+    state.authModal=true;
+    history.replaceState(null,"",location.pathname+location.search+"#admin");
   }
   render(); renderModal();
 });
