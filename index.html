@@ -1066,6 +1066,10 @@ function bindPrivateRealtime(){
   db.ref(DATA_PATH).off('value',old.data||null);
   db.ref(SETTINGS_PATH).off('value',old.settings||null);
   const dataListener=snap=>{
+    // Saat penghapusan sedang disimpan, abaikan snapshot realtime yang mungkin
+    // masih berisi data lama. Snapshot lama inilah yang dapat memunculkan kembali
+    // riwayat sesaat setelah tombol hapus ditekan.
+    if(window.__maktabahDeleteInProgress) return;
     const val=snap.val(); if(!val) return;
     applyPersisted(val);
     try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
@@ -1141,21 +1145,8 @@ async function loadData(){
         unbindPrivateRealtime();
         currentRole='petugas';
         state.mode='petugas';
-
-        // Jangan mengembalikan pengguna ke halaman publik jika callback awal
-        // Firebase selesai ketika halaman Area Petugas sedang dibuka.
-        // Ini mencegah navigasi "mental balik" saat sesi sedang diperiksa.
-        if(location.hash==="#admin" || state.view==="admin"){
-          // Pertahankan Area Petugas jika callback sesi Firebase selesai
-          // setelah pengguna membuka area ini, meskipun hash berubah/terhapus
-          // oleh browser mobile selama proses navigasi.
-          state.view='admin';
-          state.authModal=true;
-          if(location.hash!="#admin") history.replaceState(null,"",location.pathname+location.search+"#admin");
-        }else{
-          state.view='public';
-          state.authModal=null;
-        }
+        state.view='public';
+        if(location.hash==="#admin") location.hash="";
         render(); renderModal();
       }
     });
@@ -2865,28 +2856,48 @@ function saveLoanEditFromForm(){
   } : l);
   scheduleSave(); showToast("Transaksi peminjaman diperbarui","plum"); state.loanEditModal=null; renderModal(); renderContent();
 }
-function deleteLoan(id){
-  if(!guardAdmin()) return;
-  const l = state.loans.find(x=>x.id===id); if(!l) return;
-  if(confirm(`Hapus transaksi peminjaman "${l.judulBuku}" oleh ${l.nama}? Data ini juga akan dihapus dari riwayat buku dan riwayat anggota.`)){
-    // Hapus permanen dari sumber transaksi. Jangan membuat arsip baru.
-    state.deletedLoanIds = Array.from(new Set([...(state.deletedLoanIds||[]).map(String), String(id)]));
-    state.loans = state.loans.filter(x=>String(x.id)!==String(id));
-    state.riwayatLoans = (state.riwayatLoans||[]).filter(x=>String(x.id)!==String(id));
-    scheduleSave(); showToast("Transaksi dan riwayatnya dihapus","rose"); renderContent();
+async function deleteLoan(id){
+  if(!guardAdmin() || window.__maktabahDeleteInProgress) return;
+  const l = state.loans.find(x=>String(x.id)===String(id)); if(!l) return;
+  if(!confirm(`Hapus transaksi peminjaman "${l.judulBuku}" oleh ${l.nama}? Data ini juga akan dihapus dari riwayat buku dan riwayat anggota.`)) return;
+  // Kunci listener agar snapshot lama tidak mengembalikan item yang baru dihapus.
+  window.__maktabahDeleteInProgress=true;
+  state.deletedLoanIds = Array.from(new Set([...(state.deletedLoanIds||[]).map(String), String(id)]));
+  state.loans = state.loans.filter(x=>String(x.id)!==String(id));
+  state.riwayatLoans = (state.riwayatLoans||[]).filter(x=>String(x.id)!==String(id));
+  try{
+    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
+    if(firebaseReady && currentUser) await savePrivateFirebase();
+    showToast("Transaksi dan riwayatnya dihapus","rose");
+  }catch(e){
+    console.error("Gagal menyimpan penghapusan riwayat",e);
+    showToast("Penghapusan belum tersimpan ke Firebase. Periksa koneksi lalu coba lagi.","rose");
+  }finally{
+    window.__maktabahDeleteInProgress=false;
   }
+  renderContent();
 }
-function clearHistoryLoans(){
-  if(!guardAdmin()) return;
+async function clearHistoryLoans(){
+  if(!guardAdmin() || window.__maktabahDeleteInProgress) return;
   const hist = historyLoans();
   if(hist.length===0){ showToast("Tidak ada riwayat untuk dihapus","rose"); return; }
-  if(confirm(`Hapus semua ${hist.length} riwayat pengembalian? Catatan denda terkait juga akan hilang. Tindakan ini tidak bisa dibatalkan.`)){
-    const histIds = new Set(hist.map(l=>String(l.id)));
-    state.deletedLoanIds = Array.from(new Set([...(state.deletedLoanIds||[]).map(String), ...histIds]));
-    state.loans = state.loans.filter(l=>!histIds.has(String(l.id)));
-    state.riwayatLoans = (state.riwayatLoans||[]).filter(l=>!histIds.has(String(l.id)));
-    scheduleSave(); showToast("Riwayat pengembalian dihapus","rose"); renderContent();
+  if(!confirm(`Hapus semua ${hist.length} riwayat pengembalian? Catatan denda terkait juga akan hilang. Tindakan ini tidak bisa dibatalkan.`)) return;
+  window.__maktabahDeleteInProgress=true;
+  const histIds = new Set(hist.map(l=>String(l.id)));
+  state.deletedLoanIds = Array.from(new Set([...(state.deletedLoanIds||[]).map(String), ...histIds]));
+  state.loans = state.loans.filter(l=>!histIds.has(String(l.id)));
+  state.riwayatLoans = (state.riwayatLoans||[]).filter(l=>!histIds.has(String(l.id)));
+  try{
+    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
+    if(firebaseReady && currentUser) await savePrivateFirebase();
+    showToast("Riwayat pengembalian dihapus","rose");
+  }catch(e){
+    console.error("Gagal menyimpan penghapusan riwayat",e);
+    showToast("Penghapusan belum tersimpan ke Firebase. Periksa koneksi lalu coba lagi.","rose");
+  }finally{
+    window.__maktabahDeleteInProgress=false;
   }
+  renderContent();
 }
 
 /* ============ LITERASI ============ */
@@ -4361,14 +4372,8 @@ window.addEventListener("hashchange", ()=>{
   if(location.hash==="#admin"){
     state.view="admin";
     if(!currentUser) state.authModal=true;
-  }else if(state.view!=="admin"){
-    // Perubahan hash dari halaman publik tetap mengikuti perilaku semula.
-    // Jika Area Petugas sedang aktif, jangan keluarkan pengguna ke publik
-    // akibat perubahan hash yang tidak disengaja pada browser/perangkat mobile.
+  }else{
     state.view="public"; state.authModal=null;
-  }else if(!currentUser){
-    state.authModal=true;
-    history.replaceState(null,"",location.pathname+location.search+"#admin");
   }
   render(); renderModal();
 });
