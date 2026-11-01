@@ -811,6 +811,7 @@ let state = {
   mode:"admin",
   view:(location.hash==="#admin" ? "admin" : "public"),
   loaded:false,
+  publicStats:null,
   group:"dashboard", sub:null,
   search:"", bookSearch:"", memberSearch:"", katFilter:"Semua", statusFilter:"Semua", bookSelected:[],
   bookModal:null, loanTarget:null, katModalOpen:false, scanOpen:false, scanMode:"book", scanTxnMemberId:null, scanConfirm:null, scanIgnoreValue:null, scanIgnoreUntil:0, scanWrongNoticeAt:0,
@@ -976,13 +977,35 @@ function applyPersisted(raw){
     return true;
   }catch(e){ console.error("Data tersimpan tidak valid",e); ensureStateShape(); return false; }
 }
+function publicStatsPayload(){
+  const loans=Array.isArray(state.loans)?state.loans:[];
+  const readers=new Set(loans.map(l=>l.anggotaId||l.nis||l.nama).filter(Boolean));
+  const thisMonth=loans.filter(l=>{
+    if(!l.tanggalPinjam) return false;
+    const d=new Date(l.tanggalPinjam);
+    return !Number.isNaN(d.getTime()) && d.getMonth()===todayDate.getMonth() && d.getFullYear()===todayDate.getFullYear();
+  }).length;
+  const classes={};
+  loans.forEach(l=>{ if(l.kelas) classes[String(l.kelas)]=(classes[String(l.kelas)]||0)+1; });
+  const topClass=Object.entries(classes).sort((a,b)=>b[1]-a[1])[0];
+  return {
+    collection:Array.isArray(state.books)?state.books.length:0,
+    thisMonth,
+    readers:readers.size,
+    topClass:topClass?topClass[0]:null,
+    topClassCount:topClass?topClass[1]:0
+  };
+}
 async function savePublicMirror(){
   if(!firebaseReady || !currentUser) return;
   try{
+    const stats=publicStatsPayload();
     await db.ref(PUBLIC_PATH).set({
       books: state.books,
+      stats,
       settings: { namaMaktabah: state.settings.namaMaktabah, tentangMaktabah: state.settings.tentangMaktabah, panduanPeminjaman: state.settings.panduanPeminjaman }
     });
+    state.publicStats=stats;
   }catch(e){ console.error("Gagal memperbarui katalog publik",e); }
 }
 function privateDataPayload(){
@@ -1017,6 +1040,7 @@ async function loadPublicData(){
       const val=snap.val();
       if(val){
         if(Array.isArray(val.books) && val.books.length) state.books=val.books;
+        if(val.stats && typeof val.stats==="object") state.publicStats=val.stats;
         if(val.settings) state.settings={...state.settings,...val.settings};
         normalizeSettings();
       }
@@ -1134,8 +1158,11 @@ async function loadData(){
         render(); renderModal();
 
         try{
-          await loadPrivateData();
-          if(firebaseReady && db) bindPrivateRealtime();
+          const privateDataLoaded=await loadPrivateData();
+          if(firebaseReady && db){
+            if(privateDataLoaded) await savePublicMirror();
+            bindPrivateRealtime();
+          }
         }catch(e){
           console.warn('Data privat gagal dimuat:',e);
         }
@@ -1234,6 +1261,7 @@ async function refreshPublicCatalogBeforeSearch(){
     const val=snap.val();
     if(val && Array.isArray(val.books)){
       state.books=val.books;
+      if(val.stats && typeof val.stats==="object") state.publicStats=val.stats;
       if(val.settings) state.settings={...state.settings,...val.settings};
       normalizeSettings();
       try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(_){}
@@ -1258,24 +1286,22 @@ function publicBookCard(b, i=0){
   </article>`;
 }
 function publicReadingStatsHTML(){
-  const returned=state.loans.filter(l=>l.tanggalKembali && l.status==="dikembalikan").length;
-  const active=activeLoans().length;
-  const readers=new Set(state.loans.map(l=>l.anggotaId||l.nis||l.nama).filter(Boolean)).size;
-  const thisMonth=state.loans.filter(l=>{
-    const d=new Date(l.tanggalPinjam); return d.getMonth()===todayDate.getMonth() && d.getFullYear()===todayDate.getFullYear();
-  }).length;
-  const classes={};
-  state.loans.forEach(l=>{ if(l.kelas) classes[l.kelas]=(classes[l.kelas]||0)+1; });
-  const topClass=Object.entries(classes).sort((a,b)=>b[1]-a[1])[0];
+  const stats=state.publicStats;
+  const collection=stats && Number.isFinite(Number(stats.collection))?Number(stats.collection):null;
+  const thisMonth=stats && Number.isFinite(Number(stats.thisMonth))?Number(stats.thisMonth):null;
+  const readers=stats && Number.isFinite(Number(stats.readers))?Number(stats.readers):null;
+  const topClass=stats && stats.topClass?String(stats.topClass):null;
+  const topClassCount=stats && Number.isFinite(Number(stats.topClassCount))?Number(stats.topClassCount):0;
+  const pending= !stats;
   return `<section class="public-section" id="publicReadingStats">
     <div class="public-section-head"><div><h3 class="public-section-title">Statistik Membaca</h3><p class="public-section-desc">Gambaran aktivitas literasi Maktabah secara keseluruhan.</p></div></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
-      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Koleksi</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${state.books.length}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">buku</div></div>
-      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Peminjaman Bulan Ini</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${thisMonth}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">transaksi</div></div>
-      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Pembaca Aktif</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${readers}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">anggota</div></div>
-      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Kelas Teraktif</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${topClass?`Kls ${esc(topClass[0])}`:"—"}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">${topClass?`${topClass[1]} peminjaman`:"belum ada data"}</div></div>
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Koleksi</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${collection===null?"—":collection}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">buku</div></div>
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Peminjaman Bulan Ini</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${thisMonth===null?"—":thisMonth}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">transaksi</div></div>
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Pembaca Aktif</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${readers===null?"—":readers}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">anggota</div></div>
+      <div style="background:#fff;border:1px solid #E7DCC7;border-radius:16px;padding:18px;"><div style="font-size:11px;color:#8A7B66;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Kelas Teraktif</div><div style="font-size:28px;font-weight:800;color:#294536;margin-top:5px">${topClass?`Kls ${esc(topClass)}`:pending?"—":"—"}</div><div style="font-size:12px;color:#7B715F;margin-top:3px">${topClass?`${topClassCount} peminjaman`:pending?"menunggu sinkronisasi":"belum ada data"}</div></div>
     </div>
-    <div style="margin-top:12px;padding:14px 16px;background:#FAF8F2;border:1px solid #E7DCC7;border-radius:14px;font-size:12px;color:#756B59">${icon("info",14)} Data statistik bersifat agregat dan tidak menampilkan nama santri.</div>
+    <div style="margin-top:12px;padding:14px 16px;background:#FAF8F2;border:1px solid #E7DCC7;border-radius:14px;font-size:12px;color:#756B59">${icon("info",14)} Data statistik bersifat agregat dan tidak menampilkan nama santri.${pending?' Statistik akan tampil setelah data publik tersinkronisasi.':''}</div>
   </section>`;
 }
 function publicRecommendationHTML(){
