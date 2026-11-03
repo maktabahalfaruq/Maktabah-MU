@@ -161,6 +161,8 @@ const firebaseConfig = {
   .data-table th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); border-bottom:2px solid var(--line); padding:8px 10px; white-space:nowrap; }
   .data-table td{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
   .data-table tr:last-child td{ border-bottom:none; }
+  .data-table tr.report-late-return td{ background:#FFF0E8; color:#873F25; }
+  .data-table tr.report-late-return td:first-child{ box-shadow:inset 4px 0 0 #B45D35; }
   .table-wrap{ overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:9px; }
 
   .modal-backdrop{ position:fixed; inset:0; background:rgba(36,27,46,.6); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50; overflow-y:auto; }
@@ -838,6 +840,7 @@ function ensureStateShape(){
   }
 }
 ensureStateShape();
+if(typeof state.privateDataReady!=="boolean") state.privateDataReady=false;
 
 const GROUPS = [
   { key:"dashboard", label:"Dashboard", icon:icon("layoutDashboard",15) },
@@ -988,8 +991,17 @@ function publicStatsPayload(){
   const classes={};
   loans.forEach(l=>{ if(l.kelas) classes[String(l.kelas)]=(classes[String(l.kelas)]||0)+1; });
   const topClass=Object.entries(classes).sort((a,b)=>b[1]-a[1])[0];
+  const active=loans.filter(l=>l.status==="dipinjam");
+  const returnedThisMonth=loans.filter(l=>l.tanggalKembali && new Date(l.tanggalKembali).getMonth()===todayDate.getMonth() && new Date(l.tanggalKembali).getFullYear()===todayDate.getFullYear()).length;
+  const unpaidFines=loans.filter(l=>!l.dendaLunas && dendaLoan(l)>0).reduce((sum,l)=>sum+dendaLoan(l),0);
+  const lostDamaged=(Array.isArray(state.books)?state.books:[]).filter(b=>b.statusFisik!=="baik").length;
   return {
     collection:Array.isArray(state.books)?state.books.length:0,
+    totalMembers:Array.isArray(state.anggota)?state.anggota.length:0,
+    activeLoans:active.length,
+    returnedThisMonth,
+    unpaidFines,
+    lostDamaged,
     thisMonth,
     readers:readers.size,
     topClass:topClass?topClass[0]:null,
@@ -1080,6 +1092,7 @@ async function loadPrivateData(){
       try{ await db.ref(SETTINGS_PATH).set(state.settings); }catch(e){ console.warn("Migrasi nama Maktabah gagal", e); }
     }
     try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
+    state.privateDataReady=true;
     return !!(dataVal || settingsVal || legacyVal || localStorage.getItem(STORAGE_KEY));
   }catch(e){ console.warn("Data privat Firebase gagal dimuat",e); }
   return false;
@@ -1096,6 +1109,7 @@ function bindPrivateRealtime(){
     if(window.__maktabahDeleteInProgress) return;
     const val=snap.val(); if(!val) return;
     applyPersisted(val);
+    state.privateDataReady=true;
     try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
     ensureStateShape();
     if(state.view==="admin") render();
@@ -1172,6 +1186,14 @@ async function loadData(){
         unbindPrivateRealtime();
         currentRole='petugas';
         state.mode='petugas';
+        // Auth SDK can emit its initial null state after the user has already
+        // opened the staff login screen. Preserve that screen instead of
+        // navigating back to Public during the authentication hand-off.
+        if(state.authModal){
+          state.view='admin';
+          render(); renderModal();
+          return;
+        }
         state.view='public';
         if(location.hash==="#admin") location.hash="";
         render(); renderModal();
@@ -1878,6 +1900,12 @@ function dashboardHTML(){
   const returnedThisMonth = state.loans.filter(l=>l.tanggalKembali && new Date(l.tanggalKembali).getMonth()===todayDate.getMonth() && new Date(l.tanggalKembali).getFullYear()===todayDate.getFullYear()).length;
   const totalDenda = state.loans.filter(l=>!l.dendaLunas && dendaLoan(l)>0).reduce((s,l)=>s+dendaLoan(l),0);
   const rusakHilang = state.books.filter(b=>b.statusFisik!=="baik").length;
+  const cachedStats=(!state.privateDataReady && state.publicStats && typeof state.publicStats==="object")?state.publicStats:null;
+  const displayMembers=cachedStats ? (cachedStats.totalMembers ?? "…") : state.anggota.length;
+  const displayActive=cachedStats ? (cachedStats.activeLoans ?? "…") : al.length;
+  const displayReturned=cachedStats ? (cachedStats.returnedThisMonth ?? "…") : returnedThisMonth;
+  const displayFines=cachedStats ? (cachedStats.unpaidFines ?? "…") : totalDenda;
+  const displayLost=cachedStats ? (cachedStats.lostDamaged ?? "…") : rusakHilang;
 
   const perKelasMap={}; state.loans.forEach(l=>{ perKelasMap[l.kelas]=(perKelasMap[l.kelas]||0)+1; });
   const perKelas = Object.entries(perKelasMap).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
@@ -1912,12 +1940,12 @@ function dashboardHTML(){
       ${quickTile(icon("printer",15),"Cetak Label","cetak","label")}
     </div>
     <div class="stat-grid">
-      ${statCard("Total Koleksi", state.books.length, "var(--plum)", icon("libraryBig",15))}
-      ${statCard("Total Anggota", state.anggota.length, "var(--blue)", icon("users",15))}
-      ${statCard("Sedang Dipinjam", al.length, "var(--rose)", icon("clock3",15))}
-      ${statCard("Dikembalikan Bulan Ini", returnedThisMonth, "var(--gold)", icon("check",15))}
-      ${statCard("Total Denda Belum Lunas", rupiah(totalDenda), "var(--rose)", "Rp")}
-      ${statCard("Buku Hilang/Rusak", rusakHilang, "#8C6239", "!")}
+      ${statCard("Total Koleksi", cachedStats?.collection ?? state.books.length, "var(--plum)", icon("libraryBig",15))}
+      ${statCard("Total Anggota", displayMembers, "var(--blue)", icon("users",15))}
+      ${statCard("Sedang Dipinjam", displayActive, "var(--rose)", icon("clock3",15))}
+      ${statCard("Dikembalikan Bulan Ini", displayReturned, "var(--gold)", icon("check",15))}
+      ${statCard("Total Denda Belum Lunas", rupiah(displayFines), "var(--rose)", "Rp")}
+      ${statCard("Buku Hilang/Rusak", displayLost, "#8C6239", "!")}
     </div>
     ${overdueCount>0 ? `<div class="alert-box alert-rose">${icon("alertTriangle",15)} ${overdueCount} peminjaman sudah melewati jatuh tempo — cek Transaksi ▸ Pengembalian.</div>` : ""}
     ${pengingatPengembalianHTML()}
@@ -3013,7 +3041,11 @@ function laporanHTML(){
     body = tableWrap(["Kode","Judul","Peminjam","Kelas","Tgl Pinjam","Jatuh Tempo","Status"], rows.map(l=>[l.kodeBuku,l.judulBuku,l.nama,l.kelas,fmt(l.tanggalPinjam),fmt(l.tanggalJatuhTempo),l.status]));
   }else if(s==="pengembalian"){
     const rows = historyLoans().filter(l=>!state.laporanFrom&&!state.laporanTo ? true : inRange(l.tanggalKembali));
-    body = tableWrap(["Kode","Judul","Peminjam","Tgl Pinjam","Tgl Kembali","Denda"], rows.map(l=>[l.kodeBuku,l.judulBuku,l.nama,fmt(l.tanggalPinjam),fmt(l.tanggalKembali),rupiah(dendaLoan(l))]));
+    body = tableWrap(["Kode","Judul","Peminjam","Tgl Pinjam","Tgl Kembali","Denda"], rows.map(l=>[l.kodeBuku,l.judulBuku,l.nama,fmt(l.tanggalPinjam),fmt(l.tanggalKembali),rupiah(dendaLoan(l))]), rows.map(l=>{
+      const returned=String(l.tanggalKembali||"").slice(0,10);
+      const due=String(l.tanggalJatuhTempo||"").slice(0,10);
+      return !!(returned && due && returned>due);
+    }));
   }else if(s==="keterlambatan"){
     const rows = activeLoans().filter(isOverdue);
     body = tableWrap(["Kode","Judul","Peminjam","Jatuh Tempo","Hari Terlambat"], rows.map(l=>[l.kodeBuku,l.judulBuku,l.nama,fmt(l.tanggalJatuhTempo),hariTerlambat(l)]));
@@ -3027,9 +3059,9 @@ function laporanHTML(){
   }
   return rangeBar + body;
 }
-function tableWrap(headers, rows){
+function tableWrap(headers, rows, lateFlags=null){
   return `<div class="table-wrap"><table class="data-table"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>
-    ${rows.length===0?`<tr><td colspan="${headers.length}" class="muted">Tidak ada data.</td></tr>`:rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}
+    ${rows.length===0?`<tr><td colspan="${headers.length}" class="muted">Tidak ada data.</td></tr>`:rows.map((r,i)=>`<tr${Array.isArray(lateFlags)&&lateFlags[i]?' class="report-late-return"':''}>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}
   </tbody></table></div>`;
 }
 function deleteLaporanData(){
@@ -4405,6 +4437,13 @@ window.addEventListener("hashchange", ()=>{
 });
 
 (function init(){
+  // Reuse the last successfully saved private snapshot on this device for an
+  // immediate, non-zero dashboard first paint; Firebase remains authoritative
+  // and replaces this cache as soon as the live data load completes.
+  try{
+    const cached=localStorage.getItem(STORAGE_KEY);
+    if(cached && applyPersisted(cached)){ ensureStateShape(); state.privateDataReady=true; }
+  }catch(e){ console.warn("Cache lokal Maktabah tidak dapat dimuat",e); }
   // Render the public page immediately. Firebase/network loading must never
   // block the first paint, especially when an HTML file is opened directly
   // from Android Downloads (content://...).
