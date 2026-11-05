@@ -989,8 +989,14 @@ function publicStatsPayload(){
     return !Number.isNaN(d.getTime()) && d.getMonth()===todayDate.getMonth() && d.getFullYear()===todayDate.getFullYear();
   }).length;
   const classes={};
-  loans.forEach(l=>{ if(l.kelas) classes[String(l.kelas)]=(classes[String(l.kelas)]||0)+1; });
+  const booksPopular={};
+  loans.forEach(l=>{
+    if(l.kelas) classes[String(l.kelas)]=(classes[String(l.kelas)]||0)+1;
+    if(l.judulBuku) booksPopular[String(l.judulBuku)]=(booksPopular[String(l.judulBuku)]||0)+1;
+  });
   const topClass=Object.entries(classes).sort((a,b)=>b[1]-a[1])[0];
+  const perClass=Object.entries(classes).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
+  const topBooks=Object.entries(booksPopular).map(([judul,jumlah])=>({judul,jumlah})).sort((a,b)=>b.jumlah-a.jumlah).slice(0,5);
   const active=loans.filter(l=>l.status==="dipinjam");
   const returnedThisMonth=loans.filter(l=>l.tanggalKembali && new Date(l.tanggalKembali).getMonth()===todayDate.getMonth() && new Date(l.tanggalKembali).getFullYear()===todayDate.getFullYear()).length;
   const unpaidFines=loans.filter(l=>!l.dendaLunas && dendaLoan(l)>0).reduce((sum,l)=>sum+dendaLoan(l),0);
@@ -998,6 +1004,9 @@ function publicStatsPayload(){
   return {
     collection:Array.isArray(state.books)?state.books.length:0,
     totalMembers:Array.isArray(state.anggota)?state.anggota.length:0,
+    totalLoans:loans.length,
+    perClass,
+    topBooks,
     activeLoans:active.length,
     returnedThisMonth,
     unpaidFines,
@@ -1106,7 +1115,7 @@ function bindPrivateRealtime(){
     // Saat penghapusan sedang disimpan, abaikan snapshot realtime yang mungkin
     // masih berisi data lama. Snapshot lama inilah yang dapat memunculkan kembali
     // riwayat sesaat setelah tombol hapus ditekan.
-    if(window.__maktabahDeleteInProgress) return;
+    if(window.__maktabahDeleteInProgress || window.__maktabahReturnSaving) return;
     const val=snap.val(); if(!val) return;
     applyPersisted(val);
     state.privateDataReady=true;
@@ -1690,7 +1699,19 @@ function renderPublic(){
       if(inp){ try{ inp.setSelectionRange(inp.value.length,inp.value.length); }catch(_){} }
     });
     document.querySelectorAll("[data-admin-login]").forEach(b=>b.onclick=()=>{
-      state.view="admin"; state.mode="petugas"; state.authModal=true; location.hash="admin"; render(); renderModal();
+      // Jika sesi Firebase masih aktif, Area Petugas langsung membuka dashboard.
+      // Form login hanya ditampilkan ketika pengguna belum login atau sudah logout.
+      state.view="admin";
+      if(currentUser){
+        state.mode=currentRole||'petugas';
+        state.authModal=null;
+      }else{
+        state.mode="petugas";
+        state.authModal=true;
+      }
+      location.hash="admin";
+      render();
+      renderModal();
     });
     const s=document.getElementById("publicSearch"), sb=document.getElementById("publicSearchBtn");
     if(s) s.onkeydown=e=>{if(e.key==="Enter") sb?.click()};
@@ -1907,12 +1928,14 @@ function dashboardHTML(){
   const displayFines=cachedStats ? (cachedStats.unpaidFines ?? "…") : totalDenda;
   const displayLost=cachedStats ? (cachedStats.lostDamaged ?? "…") : rusakHilang;
 
+  // Pada perangkat baru, tampilkan agregat terakhir yang sudah disinkronkan
+  // ke mirror publik, tanpa menunggu seluruh data privat selesai diunduh.
   const perKelasMap={}; state.loans.forEach(l=>{ perKelasMap[l.kelas]=(perKelasMap[l.kelas]||0)+1; });
-  const perKelas = Object.entries(perKelasMap).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
+  const perKelas = cachedStats?.perClass?.length ? cachedStats.perClass : Object.entries(perKelasMap).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
   const maxJumlah = Math.max(1, ...perKelas.map(p=>p.jumlah));
 
   const topMap={}; state.loans.forEach(l=>{ topMap[l.judulBuku]=(topMap[l.judulBuku]||0)+1; });
-  const topBuku = Object.entries(topMap).map(([judul,jumlah])=>({judul,jumlah})).sort((a,b)=>b.jumlah-a.jumlah).slice(0,5);
+  const topBuku = cachedStats?.topBooks?.length ? cachedStats.topBooks : Object.entries(topMap).map(([judul,jumlah])=>({judul,jumlah})).sort((a,b)=>b.jumlah-a.jumlah).slice(0,5);
 
   const events=[];
   state.loans.forEach(l=>{ events.push({type:"pinjam",nama:l.nama,judul:l.judulBuku,tanggal:l.tanggalPinjam}); if(l.tanggalKembali) events.push({type:"kembali",nama:l.nama,judul:l.judulBuku,tanggal:l.tanggalKembali}); });
@@ -2832,9 +2855,38 @@ function dendaHTML(){
     </tbody></table></div>`}
   `;
 }
-function toggleLunas(id){
-  state.loans = state.loans.map(l=>l.id===id?{...l, dendaLunas:!l.dendaLunas}:l);
-  scheduleSave(); renderContent();
+async function toggleLunas(id){
+  if(!guardAdmin()) return;
+  if(!firebaseReady || !currentUser){
+    showToast("Tidak dapat menandai lunas: koneksi atau sesi Admin belum siap. Silakan coba lagi.","rose");
+    return;
+  }
+  window.__maktabahLunasSaving = window.__maktabahLunasSaving || new Set();
+  const key=String(id);
+  if(window.__maktabahLunasSaving.has(key)) return;
+  const index=state.loans.findIndex(l=>String(l.id)===key);
+  if(index<0) return;
+  const previous=state.loans[index];
+  const nextValue=!previous.dendaLunas;
+  window.__maktabahLunasSaving.add(key);
+  clearTimeout(saveTimer);
+  state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
+  renderContent();
+  try{
+    // Tunggu Firebase mengonfirmasi penulisan sebelum menyatakan perubahan berhasil.
+    await db.ref(DATA_PATH).set(privateDataPayload());
+    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
+    await savePublicMirror();
+    showToast(nextValue?"Status denda berhasil ditandai LUNAS dan tersimpan.":"Status lunas dibatalkan dan tersimpan.","plum");
+  }catch(e){
+    console.error("Gagal menyimpan status lunas ke Firebase",e);
+    state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:!!previous.dendaLunas}:l);
+    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(storageError){}
+    showToast("Status lunas belum tersimpan. Periksa koneksi atau hak akses, lalu coba lagi.","rose");
+  }finally{
+    window.__maktabahLunasSaving.delete(key);
+    renderContent();
+  }
 }
 
 /* ============ TRANSAKSI: EDIT & HAPUS TRANSAKSI PEMINJAMAN ============ */
@@ -4268,10 +4320,41 @@ function bindScanConfirm(){
     state.loans.unshift({id:uid(),kodeBuku:b.kode,judulBuku:b.judul,anggotaId:a.id,nama:a.nama,kelas:a.kelas,tanggalPinjam:iso(todayDate),tanggalJatuhTempo:iso(addDays(todayDate,state.settings.lamaPinjamHari)),tanggalKembali:null,status:"dipinjam",perpanjang:0,dendaLunas:false});
     scheduleSave(); state.scanConfirm=null; showToast(`"${b.judul}" dipinjamkan ke ${a.nama}`,"plum"); renderContent();
   });
-  document.getElementById("confirmScanReturn")?.addEventListener("click",()=>{
-    const c=state.scanConfirm, l=state.loans.find(x=>x.id===c.loanId); if(!l){state.scanConfirm=null;renderModal();return;}
-    state.loans=state.loans.map(x=>x.id===l.id?{...x,status:"dikembalikan",tanggalKembali:iso(todayDate)}:x);
-    scheduleSave(); state.scanConfirm=null; showToast(`"${l.judulBuku}" dikembalikan oleh ${l.nama}`,"rose"); renderContent();
+  document.getElementById("confirmScanReturn")?.addEventListener("click",async()=>{
+    if(window.__maktabahReturnSaving) return;
+    const c=state.scanConfirm, l=state.loans.find(x=>x.id===c?.loanId);
+    if(!l){state.scanConfirm=null;renderModal();return;}
+    const previousLoans=state.loans;
+    const previousPayload=(()=>{try{return localStorage.getItem(STORAGE_KEY);}catch(e){return null;}})();
+    const button=document.getElementById("confirmScanReturn");
+    window.__maktabahReturnSaving=true;
+    if(button){button.disabled=true;button.textContent="Menyimpan pengembalian...";}
+    // Batalkan debounce lama agar tidak ada penyimpanan tertunda yang menimpa
+    // status pengembalian yang sedang dikonfirmasi.
+    clearTimeout(saveTimer); saveTimer=null;
+    state.loans=state.loans.map(x=>String(x.id)===String(l.id)?{...x,status:"dikembalikan",tanggalKembali:iso(todayDate)}:x);
+    try{
+      // Simpan lokal terlebih dahulu, lalu tunggu konfirmasi Firebase sebelum
+      // menyatakan transaksi berhasil kepada petugas.
+      try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+      if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap. Silakan masuk kembali dan coba simpan.");
+      await withTimeout(db.ref(DATA_PATH).set(privateDataPayload()),15000,"Penyimpanan pengembalian");
+      // Perbarui statistik/katalog publik setelah transaksi privat berhasil.
+      try{await savePublicMirror();}catch(e){console.warn("Mirror publik belum diperbarui",e);}
+      state.scanConfirm=null;
+      showToast(`"${l.judulBuku}" berhasil dikembalikan dan tersimpan` ,"rose");
+      renderContent();
+    }catch(err){
+      state.loans=previousLoans;
+      try{if(previousPayload!==null)localStorage.setItem(STORAGE_KEY,previousPayload);else localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+      console.error("Gagal menyimpan pengembalian hasil scan",err);
+      showToast(err?.message||"Pengembalian gagal disimpan. Periksa koneksi lalu coba lagi.","rose");
+      renderModal();
+    }finally{
+      window.__maktabahReturnSaving=false;
+      const currentButton=document.getElementById("confirmScanReturn");
+      if(currentButton) currentButton.disabled=false;
+    }
   });
 }
 
