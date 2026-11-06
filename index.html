@@ -4525,7 +4525,7 @@ window.addEventListener("hashchange", ()=>{
   // and replaces this cache as soon as the live data load completes.
   try{
     const cached=localStorage.getItem(STORAGE_KEY);
-    if(cached && applyPersisted(cached)){ ensureStateShape(); state.privateDataReady=true; }
+    if(cached && applyPersisted(cached)){ ensureStateShape(); state.privateDataReady=false; }
   }catch(e){ console.warn("Cache lokal Maktabah tidak dapat dimuat",e); }
   // Render the public page immediately. Firebase/network loading must never
   // block the first paint, especially when an HTML file is opened directly
