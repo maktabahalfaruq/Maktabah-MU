@@ -2890,41 +2890,55 @@ async function toggleLunas(id){
   const index=state.loans.findIndex(l=>String(l.id)===key);
   if(index<0) return;
 
-  const previous=state.loans[index];
-  const nextValue=!previous.dendaLunas;
-  const updatedLoans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
+  const previous=!!state.loans[index].dendaLunas;
+  const nextValue=!previous;
   window.__maktabahLunasSaving.add(key);
   clearTimeout(saveTimer);
   saveTimer=null;
 
-  // Tampilkan status sementara, tetapi konfirmasi berhasil hanya setelah Firebase
-  // menyimpan dan pembacaan ulang memastikan nilai yang sama.
-  state.loans=updatedLoans;
+  // Tampilkan perubahan sementara. Penyimpanan menggunakan transaksi Firebase
+  // pada node loans agar beberapa klik pada transaksi berbeda tidak saling
+  // menimpa ketika Firebase menerima permintaan secara bersamaan.
+  state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
   renderContent();
   try{
     const loansRef=db.ref(`${DATA_PATH}/loans`);
-    await withTimeout(loansRef.set(updatedLoans),15000,"Penyimpanan status denda");
-    const verifySnap=await withTimeout(loansRef.once("value"),10000,"Verifikasi status denda");
-    const savedLoans=verifySnap.val();
-    const savedRow=Array.isArray(savedLoans)
-      ? savedLoans.find(l=>l && String(l.id)===key)
-      : (savedLoans && Object.values(savedLoans).find(l=>l && String(l.id)===key));
+    const result=await withTimeout(loansRef.transaction(current=>{
+      if(!Array.isArray(current)) return;
+      const rowIndex=current.findIndex(l=>l && String(l.id)===key);
+      if(rowIndex<0) return;
+      const updated=current.slice();
+      updated[rowIndex]={...updated[rowIndex],dendaLunas:nextValue};
+      return updated;
+    }, undefined, false),20000,"Penyimpanan status denda");
+
+    if(!result || !result.committed) throw new Error("Perubahan status denda tidak berhasil dikomit Firebase.");
+    const savedLoans=result.snapshot.val();
+    const savedRow=Array.isArray(savedLoans)?savedLoans.find(l=>l && String(l.id)===key):null;
     if(!savedRow || !!savedRow.dendaLunas!==nextValue){
-      throw new Error("Status lunas belum terkonfirmasi saat dibaca ulang dari Firebase.");
+      throw new Error("Status lunas belum terkonfirmasi pada data Firebase.");
     }
 
-    // Perbarui state dari nilai yang sudah terverifikasi dan simpan cache lokal.
-    state.loans=updatedLoans;
-    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
+    // Ambil nilai loans hasil transaksi Firebase, sehingga klik lain yang
+    // selesai lebih dahulu/bersamaan tetap tercermin di state dan cache.
+    state.loans=Array.isArray(savedLoans)?savedLoans:state.loans;
+    try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
     showToast(nextValue?"Status denda berhasil ditandai LUNAS dan tersimpan.":"Status lunas dibatalkan dan tersimpan.","plum");
     renderContent();
-    // Statistik publik diperbarui di belakang layar, tidak menunda penyimpanan status denda.
     Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
   }catch(e){
     console.error("Gagal menyimpan status lunas ke Firebase",e);
-    state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:!!previous.dendaLunas}:l);
-    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(storageError){}
-    showToast("Status lunas belum tersimpan. Periksa koneksi atau hak akses, lalu coba lagi.","rose");
+    // Muat ulang data loans dari server sebelum memulihkan tampilan, agar tidak
+    // membatalkan perubahan transaksi lain yang mungkin sudah berhasil.
+    try{
+      const snap=await db.ref(`${DATA_PATH}/loans`).once("value");
+      const serverLoans=snap.val();
+      if(Array.isArray(serverLoans)) state.loans=serverLoans;
+    }catch(readError){
+      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:previous}:l);
+    }
+    try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(storageError){}
+    showToast("Status lunas belum terkonfirmasi tersimpan. Periksa koneksi lalu coba lagi.","rose");
     renderContent();
   }finally{
     window.__maktabahLunasSaving.delete(key);
