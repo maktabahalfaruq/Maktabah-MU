@@ -1932,7 +1932,13 @@ function dashboardHTML(){
   // ke mirror publik, tanpa menunggu seluruh data privat selesai diunduh.
   const perKelasMap={}; state.loans.forEach(l=>{ perKelasMap[l.kelas]=(perKelasMap[l.kelas]||0)+1; });
   const perKelas = cachedStats?.perClass?.length ? cachedStats.perClass : Object.entries(perKelasMap).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
-  const maxJumlah = Math.max(1, ...perKelas.map(p=>p.jumlah));
+  // Pisahkan kategori Pengurus agar tampil sebagai batang tersendiri di diagram.
+  const jumlahPengurus = perKelas.filter(p=>String(p.kelas||"").trim().toLowerCase()==="pengurus").reduce((n,p)=>n+(Number(p.jumlah)||0),0);
+  const perKelasDiagram = [
+    ...perKelas.filter(p=>String(p.kelas||"").trim().toLowerCase()!=="pengurus"),
+    ...(jumlahPengurus>0 ? [{kelas:"Pengurus",jumlah:jumlahPengurus}] : [])
+  ];
+  const maxJumlah = Math.max(1, ...perKelasDiagram.map(p=>Number(p.jumlah)||0));
 
   const topMap={}; state.loans.forEach(l=>{ topMap[l.judulBuku]=(topMap[l.judulBuku]||0)+1; });
   const topBuku = cachedStats?.topBooks?.length ? cachedStats.topBooks : Object.entries(topMap).map(([judul,jumlah])=>({judul,jumlah})).sort((a,b)=>b.jumlah-a.jumlah).slice(0,5);
@@ -1974,9 +1980,10 @@ function dashboardHTML(){
     ${pengingatPengembalianHTML()}
     <div class="dash-grid">
       <div class="panel"><h3 class="panel-title">Peminjaman per Kelas</h3>
-        ${perKelas.length===0 ? `<div class="muted">Belum ada data.</div>` : `<div class="chart-bars">${perKelas.map(p=>`
-          <div class="chart-col"><div class="chart-val">${p.jumlah}</div><div class="chart-bar" style="height:${Math.max(8,(p.jumlah/maxJumlah)*140)}px"></div><div class="chart-lbl">Kls ${esc(p.kelas)}</div></div>
-        `).join("")}</div>`}
+        ${perKelasDiagram.length===0 ? `<div class="muted">Belum ada data.</div>` : `<div class="chart-bars">${perKelasDiagram.map(p=>{
+          const isPengurus=String(p.kelas||"").trim().toLowerCase()==="pengurus";
+          return `<div class="chart-col"><div class="chart-val">${p.jumlah}</div><div class="chart-bar" style="height:${Math.max(8,((Number(p.jumlah)||0)/maxJumlah)*140)}px;${isPengurus?'background:var(--gold);':''}"></div><div class="chart-lbl">${isPengurus?'Pengurus':`Kls ${esc(p.kelas)}`}</div></div>`;
+        }).join("")}</div>`}
       </div>
       <div class="panel"><h3 class="panel-title">Buku Terpopuler</h3>
         ${topBuku.length===0 ? `<div class="muted">Belum ada data.</div>` : `<div class="top-list">${topBuku.map((b,i)=>`
@@ -3090,7 +3097,11 @@ function laporanHTML(){
     body = tableWrap(["NIS","Nama","Kelas","L/P","Terdaftar"], state.anggota.map(a=>[a.nis,a.nama,a.kelas,a.lp,fmt(a.tglDaftar)]));
   }else if(s==="peminjaman"){
     const rows = state.loans.filter(l=>!state.laporanFrom&&!state.laporanTo ? true : inRange(l.tanggalPinjam));
-    body = tableWrap(["Kode","Judul","Peminjam","Kelas","Tgl Pinjam","Jatuh Tempo","Status"], rows.map(l=>[l.kodeBuku,l.judulBuku,l.nama,l.kelas,fmt(l.tanggalPinjam),fmt(l.tanggalJatuhTempo),l.status]));
+    body = tableWrap(["Kode","Judul","Peminjam","Kelas","Tgl Pinjam","Jatuh Tempo","Status"], rows.map(l=>[l.kodeBuku,l.judulBuku,l.nama,l.kelas,fmt(l.tanggalPinjam),fmt(l.tanggalJatuhTempo),l.status]), rows.map(l=>{
+      const due=String(l.tanggalJatuhTempo||"").slice(0,10);
+      const returned=String(l.tanggalKembali||"").slice(0,10);
+      return !!(due && ((l.status==="dipinjam" && due<iso(todayDate)) || (returned && returned>due)));
+    }));
   }else if(s==="pengembalian"){
     const rows = historyLoans().filter(l=>!state.laporanFrom&&!state.laporanTo ? true : inRange(l.tanggalKembali));
     body = tableWrap(["Kode","Judul","Peminjam","Tgl Pinjam","Tgl Kembali","Denda"], rows.map(l=>[l.kodeBuku,l.judulBuku,l.nama,fmt(l.tanggalPinjam),fmt(l.tanggalKembali),rupiah(dendaLoan(l))]), rows.map(l=>{
