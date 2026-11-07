@@ -990,10 +990,17 @@ function publicStatsPayload(){
   }).length;
   const classes={};
   const booksPopular={};
+  const memberById=new Map((Array.isArray(state.anggota)?state.anggota:[]).map(a=>[String(a.id||""),a]));
   loans.forEach(l=>{
-    if(l.kelas) classes[String(l.kelas)]=(classes[String(l.kelas)]||0)+1;
+    const member=memberById.get(String(l.anggotaId||""));
+    const kelas=String(l.kelas||member?.kelas||"").trim();
+    if(kelas){
+      const key=kelas.toLowerCase()==="pengurus"?"Pengurus":kelas;
+      classes[key]=(classes[key]||0)+1;
+    }
     if(l.judulBuku) booksPopular[String(l.judulBuku)]=(booksPopular[String(l.judulBuku)]||0)+1;
   });
+  if(!Object.keys(classes).some(k=>k.toLowerCase()==="pengurus")) classes.Pengurus=0;
   const topClass=Object.entries(classes).sort((a,b)=>b[1]-a[1])[0];
   const perClass=Object.entries(classes).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
   const topBooks=Object.entries(booksPopular).map(([judul,jumlah])=>({judul,jumlah})).sort((a,b)=>b.jumlah-a.jumlah).slice(0,5);
@@ -1930,13 +1937,22 @@ function dashboardHTML(){
 
   // Pada perangkat baru, tampilkan agregat terakhir yang sudah disinkronkan
   // ke mirror publik, tanpa menunggu seluruh data privat selesai diunduh.
-  const perKelasMap={}; state.loans.forEach(l=>{ perKelasMap[l.kelas]=(perKelasMap[l.kelas]||0)+1; });
+  const perKelasMap={};
+  const anggotaLookup=new Map((state.anggota||[]).map(a=>[String(a.id||""),a]));
+  state.loans.forEach(l=>{
+    const anggota=anggotaLookup.get(String(l.anggotaId||""));
+    const rawKelas=String(l.kelas||anggota?.kelas||"").trim();
+    if(rawKelas){
+      const key=rawKelas.toLowerCase()==="pengurus"?"Pengurus":rawKelas;
+      perKelasMap[key]=(perKelasMap[key]||0)+1;
+    }
+  });
   const perKelas = cachedStats?.perClass?.length ? cachedStats.perClass : Object.entries(perKelasMap).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
-  // Pisahkan kategori Pengurus agar tampil sebagai batang tersendiri di diagram.
+  // Pengurus selalu ditampilkan sebagai kategori tersendiri, termasuk saat belum ada transaksi.
   const jumlahPengurus = perKelas.filter(p=>String(p.kelas||"").trim().toLowerCase()==="pengurus").reduce((n,p)=>n+(Number(p.jumlah)||0),0);
   const perKelasDiagram = [
     ...perKelas.filter(p=>String(p.kelas||"").trim().toLowerCase()!=="pengurus"),
-    ...(jumlahPengurus>0 ? [{kelas:"Pengurus",jumlah:jumlahPengurus}] : [])
+    {kelas:"Pengurus",jumlah:jumlahPengurus}
   ];
   const maxJumlah = Math.max(1, ...perKelasDiagram.map(p=>Number(p.jumlah)||0));
 
@@ -4350,11 +4366,13 @@ function bindScanConfirm(){
       try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
       if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap. Silakan masuk kembali dan coba simpan.");
       await withTimeout(db.ref(DATA_PATH).set(privateDataPayload()),15000,"Penyimpanan pengembalian");
-      // Perbarui statistik/katalog publik setelah transaksi privat berhasil.
-      try{await savePublicMirror();}catch(e){console.warn("Mirror publik belum diperbarui",e);}
+      // Tutup konfirmasi segera setelah transaksi privat dipastikan tersimpan.
       state.scanConfirm=null;
-      showToast(`"${l.judulBuku}" berhasil dikembalikan dan tersimpan` ,"rose");
+      renderModal();
+      showToast(`"${l.judulBuku}" berhasil dikembalikan dan tersimpan` ,"plum");
       renderContent();
+      // Mirror publik hanya pembaruan tambahan; jangan menahan tombol/modal.
+      Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
     }catch(err){
       state.loans=previousLoans;
       try{if(previousPayload!==null)localStorage.setItem(STORAGE_KEY,previousPayload);else localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
