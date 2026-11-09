@@ -1122,7 +1122,7 @@ function bindPrivateRealtime(){
     // Saat penghapusan sedang disimpan, abaikan snapshot realtime yang mungkin
     // masih berisi data lama. Snapshot lama inilah yang dapat memunculkan kembali
     // riwayat sesaat setelah tombol hapus ditekan.
-    if(window.__maktabahDeleteInProgress || window.__maktabahReturnSaving) return;
+    if(window.__maktabahDeleteInProgress || window.__maktabahReturnSaving || (window.__maktabahLunasSaving && window.__maktabahLunasSaving.size)) return;
     const val=snap.val(); if(!val) return;
     applyPersisted(val);
     state.privateDataReady=true;
@@ -2873,7 +2873,7 @@ function dendaHTML(){
     ${list.length===0? `<div class="muted" style="text-align:center;padding:40px 0;">Tidak ada denda.</div>` : `<div class="table-wrap"><table class="data-table"><thead><tr><th>Kode</th><th>Judul</th><th>Peminjam</th><th>Terlambat</th><th>Denda</th><th>Status</th><th></th></tr></thead><tbody>
     ${list.map(l=>`<tr><td><span class="kode-chip" style="background:var(--plum)">${esc(l.kodeBuku)}</span></td><td>${esc(l.judulBuku)}</td><td>${esc(l.nama)} (Kls ${esc(l.kelas)})</td><td>${hariTerlambat(l)} hari</td><td>${rupiah(dendaLoan(l))}</td>
       <td><span class="badge ${l.dendaLunas?'badge-plum':'badge-rose'}">${l.dendaLunas?'Lunas':'Belum Lunas'}</span></td>
-      <td style="display:flex;gap:6px;"><button class="btn btn-sm ${l.dendaLunas?'btn-outline':'btn-gold'}" data-lunas="${l.id}">${l.dendaLunas?'Batal Lunas':'Tandai Lunas'}</button>
+      <td style="display:flex;gap:6px;"><button type="button" class="btn btn-sm ${l.dendaLunas?'btn-outline':'btn-gold'}" data-lunas="${l.id}" style="touch-action:manipulation; -webkit-tap-highlight-color:transparent;">${l.dendaLunas?'Batal Lunas':'Tandai Lunas'}</button>
       <button class="icon-btn" title="Edit transaksi" data-editloan="${l.id}">${icon("pencil",15)}</button><button class="icon-btn" title="Hapus transaksi" data-delloan="${l.id}">${icon("trash2",15)}</button></td></tr>`).join("")}
     </tbody></table></div>`}
   `;
@@ -2892,53 +2892,63 @@ async function toggleLunas(id){
 
   const previous=!!state.loans[index].dendaLunas;
   const nextValue=!previous;
+  const row=state.loans[index];
   window.__maktabahLunasSaving.add(key);
   clearTimeout(saveTimer);
   saveTimer=null;
 
-  // Tampilkan perubahan sementara. Penyimpanan menggunakan transaksi Firebase
-  // pada node loans agar beberapa klik pada transaksi berbeda tidak saling
-  // menimpa ketika Firebase menerima permintaan secara bersamaan.
+  // Update tampilan segera; simpan hanya field dendaLunas pada transaksi ini.
+  // Penulisan leaf menghindari transaksi array yang bisa gagal pada beberapa
+  // bentuk data Firebase serta tidak menimpa perubahan transaksi lain.
   state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
   renderContent();
+  const statusRef=db.ref(`${DATA_PATH}/loans/${index}/dendaLunas`);
   try{
-    const loansRef=db.ref(`${DATA_PATH}/loans`);
-    const result=await withTimeout(loansRef.transaction(current=>{
-      if(!Array.isArray(current)) return;
-      const rowIndex=current.findIndex(l=>l && String(l.id)===key);
-      if(rowIndex<0) return;
-      const updated=current.slice();
-      updated[rowIndex]={...updated[rowIndex],dendaLunas:nextValue};
-      return updated;
-    }, undefined, false),20000,"Penyimpanan status denda");
+    let saveError=null;
+    try{
+      await withTimeout(statusRef.set(nextValue),15000,"Penyimpanan status denda");
+    }catch(e){ saveError=e; }
 
-    if(!result || !result.committed) throw new Error("Perubahan status denda tidak berhasil dikomit Firebase.");
-    const savedLoans=result.snapshot.val();
-    const savedRow=Array.isArray(savedLoans)?savedLoans.find(l=>l && String(l.id)===key):null;
-    if(!savedRow || !!savedRow.dendaLunas!==nextValue){
-      throw new Error("Status lunas belum terkonfirmasi pada data Firebase.");
+    // Jika jaringan lambat menyebabkan timeout, periksa server dahulu.
+    // Jangan mengembalikan tombol ke status lama jika penulisan sebenarnya sukses.
+    let confirmed=false;
+    try{
+      const snap=await withTimeout(statusRef.once("value"),10000,"Verifikasi status denda");
+      confirmed=snap.val()===nextValue;
+    }catch(readError){
+      if(!saveError) saveError=readError;
+    }
+    if(!confirmed){
+      if(saveError) throw saveError;
+      throw new Error("Status lunas belum terkonfirmasi pada Firebase.");
     }
 
-    // Ambil nilai loans hasil transaksi Firebase, sehingga klik lain yang
-    // selesai lebih dahulu/bersamaan tetap tercermin di state dan cache.
-    state.loans=Array.isArray(savedLoans)?savedLoans:state.loans;
+    // Sinkronkan row lokal dari server tanpa mengganti transaksi lain yang
+    // mungkin sedang diperbarui di perangkat ini.
+    state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
     try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
     showToast(nextValue?"Status denda berhasil ditandai LUNAS dan tersimpan.":"Status lunas dibatalkan dan tersimpan.","plum");
     renderContent();
     Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
   }catch(e){
     console.error("Gagal menyimpan status lunas ke Firebase",e);
-    // Muat ulang data loans dari server sebelum memulihkan tampilan, agar tidak
-    // membatalkan perubahan transaksi lain yang mungkin sudah berhasil.
+    // Baca nilai server. Bila belum dapat dibaca, pertahankan perubahan lokal
+    // sementara agar UI tidak diam-diam membatalkan pembayaran yang sudah dicatat.
     try{
-      const snap=await db.ref(`${DATA_PATH}/loans`).once("value");
-      const serverLoans=snap.val();
-      if(Array.isArray(serverLoans)) state.loans=serverLoans;
+      const snap=await withTimeout(statusRef.once("value"),10000,"Pembacaan status denda");
+      const serverValue=snap.val();
+      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:serverValue===true}:l);
+      if(serverValue===nextValue){
+        try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(storageError){}
+        showToast("Status LUNAS sudah tersimpan dan terverifikasi.","plum");
+      }else{
+        showToast("Status belum tersimpan. Periksa koneksi lalu tekan kembali.","rose");
+      }
     }catch(readError){
-      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:previous}:l);
+      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
+      showToast("Koneksi belum stabil. Status dipertahankan sementara; periksa koneksi sebelum mencoba lagi.","rose");
     }
     try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(storageError){}
-    showToast("Status lunas belum terkonfirmasi tersimpan. Periksa koneksi lalu coba lagi.","rose");
     renderContent();
   }finally{
     window.__maktabahLunasSaving.delete(key);
@@ -4394,17 +4404,35 @@ function bindScanConfirm(){
     clearTimeout(saveTimer); saveTimer=null;
     state.loans=state.loans.map(x=>String(x.id)===String(l.id)?{...x,status:"dikembalikan",tanggalKembali:iso(todayDate)}:x);
     try{
-      // Simpan lokal terlebih dahulu, lalu tunggu konfirmasi Firebase sebelum
-      // menyatakan transaksi berhasil kepada petugas.
+      // Simpan cache lokal segera. Ke Firebase hanya kirim node transaksi
+      // peminjaman, bukan seluruh database buku/anggota/pengaturan.
       try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
       if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap. Silakan masuk kembali dan coba simpan.");
-      await withTimeout(db.ref(DATA_PATH).set(privateDataPayload()),15000,"Penyimpanan pengembalian");
-      // Tutup konfirmasi segera setelah transaksi privat dipastikan tersimpan.
+      const loansRef=db.ref(`${DATA_PATH}/loans`);
+      const targetId=String(l.id);
+      const returnedAt=iso(todayDate);
+      const result=await withTimeout(loansRef.transaction(current=>{
+        if(!Array.isArray(current)) return;
+        const index=current.findIndex(row=>row && String(row.id)===targetId);
+        if(index<0) return;
+        // Jangan menimpa transaksi yang sudah dikembalikan dari perangkat lain.
+        if(current[index].status==="dikembalikan") return current;
+        const updated=current.slice();
+        updated[index]={...updated[index],status:"dikembalikan",tanggalKembali:returnedAt};
+        return updated;
+      },undefined,false),12000,"Penyimpanan pengembalian");
+      if(!result || !result.committed) throw new Error("Transaksi belum tersimpan. Periksa apakah buku sudah dikembalikan dari perangkat lain, lalu muat ulang data.");
+      const savedLoans=result.snapshot.val();
+      const savedRow=Array.isArray(savedLoans)?savedLoans.find(row=>row && String(row.id)===targetId):null;
+      if(!savedRow || savedRow.status!=="dikembalikan") throw new Error("Firebase belum mengonfirmasi status pengembalian. Silakan periksa data sebelum mencoba lagi.");
+      state.loans=Array.isArray(savedLoans)?savedLoans:state.loans;
+      try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+      // Tutup konfirmasi begitu node transaksi sudah terverifikasi tersimpan.
       state.scanConfirm=null;
       renderModal();
       showToast(`"${l.judulBuku}" berhasil dikembalikan dan tersimpan` ,"plum");
       renderContent();
-      // Mirror publik hanya pembaruan tambahan; jangan menahan tombol/modal.
+      // Katalog publik bukan bagian dari konfirmasi transaksi; perbarui di latar.
       Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
     }catch(err){
       state.loans=previousLoans;
