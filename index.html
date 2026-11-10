@@ -2744,14 +2744,48 @@ function peminjamanHTML(){
     ${loanListHTML(activeLoans(), false)}
   `;
 }
-function createLoanFromForm(){
+async function saveNewLoanToFirebase(loan){
+  if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap. Peminjaman belum tersimpan.");
+  const loansRef=db.ref(`${DATA_PATH}/loans`);
+  const result=await withTimeout(loansRef.transaction(current=>{
+    let rows;
+    if(Array.isArray(current)) rows=current.slice();
+    else if(current && typeof current==="object") rows=Object.keys(current).sort((a,b)=>Number(a)-Number(b)).map(k=>current[k]).filter(Boolean);
+    else rows=[];
+    if(rows.some(row=>row && String(row.id)===String(loan.id))) return rows;
+    // Cegah dua perangkat mencatat buku yang sama sebagai pinjaman aktif.
+    if(rows.some(row=>row && String(row.kodeBuku)===String(loan.kodeBuku) && row.status==="dipinjam")) return;
+    rows.unshift(loan);
+    return rows;
+  },undefined,false),20000,"Penyimpanan peminjaman");
+  if(!result || !result.committed) throw new Error("Peminjaman tidak tersimpan. Buku mungkin sudah dipinjam dari perangkat lain.");
+  const saved=result.snapshot.val();
+  const rows=Array.isArray(saved)?saved:(saved && typeof saved==="object"?Object.keys(saved).sort((a,b)=>Number(a)-Number(b)).map(k=>saved[k]).filter(Boolean):[]);
+  const confirmed=rows.find(row=>row && String(row.id)===String(loan.id));
+  if(!confirmed || confirmed.status!=="dipinjam" || String(confirmed.kodeBuku)!==String(loan.kodeBuku)) throw new Error("Firebase belum mengonfirmasi data peminjaman.");
+  state.loans=rows;
+  try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+  return confirmed;
+}
+
+async function createLoanFromForm(){
+  if(window.__maktabahNewLoanSaving) return;
   const anggotaId = document.getElementById("pj_anggota").value;
   const bookId = document.getElementById("pj_buku").value;
   const ang = anggotaById(anggotaId); const b = state.books.find(x=>x.id===bookId);
   if(!ang || !b){ showToast("Pilih anggota dan buku terlebih dahulu","rose"); return; }
-  state.loans.unshift({ id:uid(), kodeBuku:b.kode, judulBuku:b.judul, anggotaId:ang.id, nama:ang.nama, kelas:ang.kelas,
-    tanggalPinjam:iso(todayDate), tanggalJatuhTempo:iso(addDays(todayDate, state.settings.lamaPinjamHari)), tanggalKembali:null, status:"dipinjam", perpanjang:0, dendaLunas:false });
-  scheduleSave(); showToast(`"${b.judul}" dipinjamkan ke ${ang.nama}`,"plum"); renderContent();
+  const loan={ id:uid(), kodeBuku:b.kode, judulBuku:b.judul, anggotaId:ang.id, nama:ang.nama, kelas:ang.kelas,
+    tanggalPinjam:iso(todayDate), tanggalJatuhTempo:iso(addDays(todayDate, state.settings.lamaPinjamHari)), tanggalKembali:null, status:"dipinjam", perpanjang:0, dendaLunas:false };
+  window.__maktabahNewLoanSaving=true;
+  try{
+    await saveNewLoanToFirebase(loan);
+    showToast(`"${b.judul}" berhasil dipinjamkan dan tersimpan`,"plum");
+    renderContent();
+    Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
+  }catch(e){
+    console.error("Gagal menyimpan peminjaman",e);
+    showToast(e?.message||"Peminjaman belum tersimpan. Silakan coba lagi.","rose");
+  }finally{window.__maktabahNewLoanSaving=false;}
 }
 
 /* ============ RIWAYAT PEMINJAMAN ============ */
@@ -4442,12 +4476,29 @@ function scanConfirmHTML(){
 function bindScanConfirm(){
   document.getElementById("scanConfirmBackdrop")?.addEventListener("click",e=>{if(e.target.id==="scanConfirmBackdrop"){state.scanConfirm=null;renderModal();}});
   document.getElementById("closeScanConfirm")?.addEventListener("click",()=>{state.scanConfirm=null;renderModal();});
-  document.getElementById("confirmScanLoan")?.addEventListener("click",()=>{
-    const c=state.scanConfirm, a=anggotaById(c.memberId), b=state.books.find(x=>x.id===c.bookId);
+  document.getElementById("confirmScanLoan")?.addEventListener("click",async()=>{
+    if(window.__maktabahNewLoanSaving) return;
+    const c=state.scanConfirm, a=anggotaById(c?.memberId), b=state.books.find(x=>x.id===c?.bookId);
     if(!a||!b){state.scanConfirm=null;renderModal();return;}
     if(isDipinjam(b.kode)||b.statusFisik!=="baik"){showToast("Buku sudah tidak tersedia","rose");state.scanConfirm=null;renderModal();return;}
-    state.loans.unshift({id:uid(),kodeBuku:b.kode,judulBuku:b.judul,anggotaId:a.id,nama:a.nama,kelas:a.kelas,tanggalPinjam:iso(todayDate),tanggalJatuhTempo:iso(addDays(todayDate,state.settings.lamaPinjamHari)),tanggalKembali:null,status:"dipinjam",perpanjang:0,dendaLunas:false});
-    scheduleSave(); state.scanConfirm=null; showToast(`"${b.judul}" dipinjamkan ke ${a.nama}`,"plum"); renderContent();
+    const loan={id:uid(),kodeBuku:b.kode,judulBuku:b.judul,anggotaId:a.id,nama:a.nama,kelas:a.kelas,tanggalPinjam:iso(todayDate),tanggalJatuhTempo:iso(addDays(todayDate,state.settings.lamaPinjamHari)),tanggalKembali:null,status:"dipinjam",perpanjang:0,dendaLunas:false};
+    const button=document.getElementById("confirmScanLoan");
+    window.__maktabahNewLoanSaving=true;
+    if(button){button.disabled=true;button.textContent="Menyimpan peminjaman...";}
+    try{
+      await saveNewLoanToFirebase(loan);
+      state.scanConfirm=null; renderModal();
+      showToast(`"${b.judul}" berhasil dipinjamkan ke ${a.nama} dan tersimpan`,"plum");
+      renderContent();
+      Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
+    }catch(e){
+      console.error("Gagal menyimpan peminjaman hasil scan",e);
+      showToast(e?.message||"Peminjaman belum tersimpan. Periksa koneksi lalu coba lagi.","rose");
+    }finally{
+      window.__maktabahNewLoanSaving=false;
+      const currentButton=document.getElementById("confirmScanLoan");
+      if(currentButton){currentButton.disabled=false;currentButton.textContent="Simpan Peminjaman";}
+    }
   });
   document.getElementById("confirmScanReturn")?.addEventListener("click",async()=>{
     if(window.__maktabahReturnSaving) return;
