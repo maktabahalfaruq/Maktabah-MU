@@ -869,6 +869,8 @@ const GROUPS = [
 const STORAGE_KEY = "maktabah-alfaruq-v4";
 const FIREBASE_PATH = "maktabahAlFaruq/data"; // legacy path for one-time migration
 const DATA_PATH = "maktabahAlFaruq/private/data";
+const FINE_STATUS_PATH = "maktabahAlFaruq/private/fineStatus";
+const RETURN_STATUS_PATH = "maktabahAlFaruq/private/returnStatus";
 normalizeSettings();
 
 const SETTINGS_PATH = "maktabahAlFaruq/private/settings";
@@ -1082,17 +1084,56 @@ function withTimeout(promise, ms, label="Operasi Firebase"){
   ]);
 }
 
+function applyFineStatusMap(raw){
+  const map = raw && typeof raw === "object" ? raw : {};
+  window.__maktabahFineStatusMap = map;
+  if(Array.isArray(state.loans)){
+    state.loans = state.loans.map(l => Object.prototype.hasOwnProperty.call(map, String(l.id))
+      ? {...l, dendaLunas: map[String(l.id)] === true}
+      : l);
+  }
+}
+function applyReturnStatusMap(raw){
+  const map = raw && typeof raw === "object" ? raw : {};
+  window.__maktabahReturnStatusMap = map;
+  if(Array.isArray(state.loans)){
+    state.loans = state.loans.map(l => {
+      const saved = map[String(l.id)];
+      return saved && saved.status === "dikembalikan"
+        ? {...l, status:"dikembalikan", tanggalKembali:saved.tanggalKembali || l.tanggalKembali || null}
+        : l;
+    });
+  }
+}
+async function saveReturnStatus(id, tanggalKembali, status="dikembalikan"){
+  if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap.");
+  const key=String(id);
+  const ref=db.ref(`${RETURN_STATUS_PATH}/${key}`);
+  const record={status, tanggalKembali};
+  await withTimeout(ref.set(record),15000,"Penyimpanan status pengembalian");
+  const verify=await withTimeout(ref.once("value"),12000,"Verifikasi pengembalian");
+  const saved=verify.val();
+  if(!saved || saved.status!==status || (tanggalKembali && saved.tanggalKembali!==tanggalKembali))
+    throw new Error("Firebase belum mengonfirmasi status pengembalian.");
+  window.__maktabahReturnStatusMap={...(window.__maktabahReturnStatusMap||{}),[key]:saved};
+  return saved;
+}
+
 async function loadPrivateData(){
   if(!firebaseReady || !currentUser) return false;
   try{
-    const [dataSnap,settingsSnap,legacySnap]=await Promise.all([
+    const [dataSnap,settingsSnap,legacySnap,fineStatusSnap,returnStatusSnap]=await Promise.all([
       withTimeout(db.ref(DATA_PATH).once('value'),7000,'Data Maktabah'),
       withTimeout(db.ref(SETTINGS_PATH).once('value'),7000,'Pengaturan Maktabah'),
-      withTimeout(db.ref(FIREBASE_PATH).once('value'),7000,'Data lama Maktabah')
+      withTimeout(db.ref(FIREBASE_PATH).once('value'),7000,'Data lama Maktabah'),
+      withTimeout(db.ref(FINE_STATUS_PATH).once('value'),7000,'Status pembayaran denda'),
+      withTimeout(db.ref(RETURN_STATUS_PATH).once('value'),7000,'Status pengembalian buku')
     ]);
     const dataVal=dataSnap.val();
     const settingsVal=settingsSnap.val();
     const legacyVal=legacySnap.val();
+    const fineStatusVal=fineStatusSnap.val();
+    const returnStatusVal=returnStatusSnap.val();
     if(dataVal) applyPersisted({...dataVal, ...(settingsVal?{settings:settingsVal}: {})});
     else if(legacyVal){
       applyPersisted(legacyVal);
@@ -1102,6 +1143,8 @@ async function loadPrivateData(){
       if(local && applyPersisted(local)) await savePrivateFirebase();
     }
     ensureStateShape();
+    applyFineStatusMap(fineStatusVal);
+    applyReturnStatusMap(returnStatusVal);
     normalizeSettings();
     // Migrasikan nama lama yang masih tersimpan di Firebase/localStorage.
     if(isAdmin() && state.settings?.namaMaktabah === "Maktabah Marhalah Ula (Ibtidaiyah) Al-Faruq") {
@@ -1118,6 +1161,18 @@ function bindPrivateRealtime(){
   const old=window.__maktabahPrivateListener || {};
   db.ref(DATA_PATH).off('value',old.data||null);
   db.ref(SETTINGS_PATH).off('value',old.settings||null);
+  db.ref(FINE_STATUS_PATH).off('value',old.fine||null);
+  db.ref(RETURN_STATUS_PATH).off('value',old.returns||null);
+  const fineListener=snap=>{
+    applyFineStatusMap(snap.val());
+    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
+    if(state.view==="admin" && !(window.__maktabahLunasSaving && window.__maktabahLunasSaving.size)) render();
+  };
+  const returnListener=snap=>{
+    applyReturnStatusMap(snap.val());
+    try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+    if(state.view==="admin" && !window.__maktabahReturnSaving) render();
+  };
   const dataListener=snap=>{
     // Saat penghapusan sedang disimpan, abaikan snapshot realtime yang mungkin
     // masih berisi data lama. Snapshot lama inilah yang dapat memunculkan kembali
@@ -1125,6 +1180,8 @@ function bindPrivateRealtime(){
     if(window.__maktabahDeleteInProgress || window.__maktabahReturnSaving || (window.__maktabahLunasSaving && window.__maktabahLunasSaving.size)) return;
     const val=snap.val(); if(!val) return;
     applyPersisted(val);
+    applyFineStatusMap(window.__maktabahFineStatusMap || {});
+    applyReturnStatusMap(window.__maktabahReturnStatusMap || {});
     state.privateDataReady=true;
     try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
     ensureStateShape();
@@ -1138,14 +1195,18 @@ function bindPrivateRealtime(){
     try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
     if(state.view==="admin") render();
   };
-  window.__maktabahPrivateListener={data:dataListener,settings:settingsListener};
+  window.__maktabahPrivateListener={data:dataListener,settings:settingsListener,fine:fineListener,returns:returnListener};
   db.ref(DATA_PATH).on('value',dataListener);
   db.ref(SETTINGS_PATH).on('value',settingsListener);
+  db.ref(FINE_STATUS_PATH).on('value',fineListener);
+  db.ref(RETURN_STATUS_PATH).on('value',returnListener);
 }
 function unbindPrivateRealtime(){
   if(firebaseReady && window.__maktabahPrivateListener){
     db.ref(DATA_PATH).off('value',window.__maktabahPrivateListener.data||null);
     db.ref(SETTINGS_PATH).off('value',window.__maktabahPrivateListener.settings||null);
+    db.ref(FINE_STATUS_PATH).off('value',window.__maktabahPrivateListener.fine||null);
+    db.ref(RETURN_STATUS_PATH).off('value',window.__maktabahPrivateListener.returns||null);
     window.__maktabahPrivateListener=null;
   }
 }
@@ -2798,10 +2859,23 @@ function pengembalianHTML(){
     </tbody></table></div>`}
   `;
 }
-function returnLoan(id){
-  const l=state.loans.find(x=>x.id===id); if(!l) return;
-  state.loans = state.loans.map(x=>x.id===id?{...x, status:"dikembalikan", tanggalKembali:iso(todayDate)}:x);
-  scheduleSave(); showToast(`"${l.judulBuku}" dikembalikan oleh ${l.nama}`,"rose"); renderContent();
+async function returnLoan(id){
+  if(window.__maktabahReturnSaving) return;
+  const l=state.loans.find(x=>String(x.id)===String(id)); if(!l) return;
+  const returnedAt=iso(todayDate);
+  window.__maktabahReturnSaving=true;
+  clearTimeout(saveTimer); saveTimer=null;
+  try{
+    await saveReturnStatus(l.id,returnedAt);
+    state.loans=state.loans.map(x=>String(x.id)===String(id)?{...x,status:"dikembalikan",tanggalKembali:returnedAt}:x);
+    try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+    showToast(`"${l.judulBuku}" berhasil dikembalikan dan tersimpan`,"plum");
+    renderContent();
+    Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn(e));
+  }catch(e){
+    console.error("Gagal menyimpan pengembalian",e);
+    showToast(e?.message||"Pengembalian belum tersimpan. Periksa koneksi.","rose");
+  }finally{window.__maktabahReturnSaving=false;}
 }
 
 /* ============ TRANSAKSI: PERPANJANGAN ============ */
@@ -2887,44 +2961,30 @@ async function toggleLunas(id){
   window.__maktabahLunasSaving = window.__maktabahLunasSaving || new Set();
   const key=String(id);
   if(window.__maktabahLunasSaving.has(key)) return;
-  const index=state.loans.findIndex(l=>String(l.id)===key);
-  if(index<0) return;
-
-  const previous=!!state.loans[index].dendaLunas;
+  const row=state.loans.find(l=>String(l.id)===key);
+  if(!row) return;
+  const currentMap=window.__maktabahFineStatusMap || {};
+  const previous=Object.prototype.hasOwnProperty.call(currentMap,key) ? currentMap[key]===true : !!row.dendaLunas;
   const nextValue=!previous;
-  const row=state.loans[index];
+  const statusRef=db.ref(`${FINE_STATUS_PATH}/${key}`);
   window.__maktabahLunasSaving.add(key);
   clearTimeout(saveTimer);
   saveTimer=null;
-
-  // Update tampilan segera; simpan hanya field dendaLunas pada transaksi ini.
-  // Penulisan leaf menghindari transaksi array yang bisa gagal pada beberapa
-  // bentuk data Firebase serta tidak menimpa perubahan transaksi lain.
+  window.__maktabahFineStatusMap={...currentMap,[key]:nextValue};
   state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
   renderContent();
-  const statusRef=db.ref(`${DATA_PATH}/loans/${index}/dendaLunas`);
   try{
-    let saveError=null;
-    try{
-      await withTimeout(statusRef.set(nextValue),15000,"Penyimpanan status denda");
-    }catch(e){ saveError=e; }
-
-    // Jika jaringan lambat menyebabkan timeout, periksa server dahulu.
-    // Jangan mengembalikan tombol ke status lama jika penulisan sebenarnya sukses.
-    let confirmed=false;
-    try{
-      const snap=await withTimeout(statusRef.once("value"),10000,"Verifikasi status denda");
-      confirmed=snap.val()===nextValue;
-    }catch(readError){
-      if(!saveError) saveError=readError;
+    let writeError=null;
+    try{ await withTimeout(statusRef.set(nextValue),20000,"Penyimpanan status denda"); }
+    catch(e){ writeError=e; }
+    let serverValue;
+    try{ serverValue=(await withTimeout(statusRef.once("value"),12000,"Verifikasi status denda")).val(); }
+    catch(readError){ if(!writeError) writeError=readError; }
+    if(serverValue!==nextValue){
+      if(writeError) throw writeError;
+      throw new Error("Status pembayaran belum terkonfirmasi di Firebase.");
     }
-    if(!confirmed){
-      if(saveError) throw saveError;
-      throw new Error("Status lunas belum terkonfirmasi pada Firebase.");
-    }
-
-    // Sinkronkan row lokal dari server tanpa mengganti transaksi lain yang
-    // mungkin sedang diperbarui di perangkat ini.
+    window.__maktabahFineStatusMap={...(window.__maktabahFineStatusMap||{}),[key]:nextValue};
     state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
     try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
     showToast(nextValue?"Status denda berhasil ditandai LUNAS dan tersimpan.":"Status lunas dibatalkan dan tersimpan.","plum");
@@ -2932,23 +2992,22 @@ async function toggleLunas(id){
     Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
   }catch(e){
     console.error("Gagal menyimpan status lunas ke Firebase",e);
-    // Baca nilai server. Bila belum dapat dibaca, pertahankan perubahan lokal
-    // sementara agar UI tidak diam-diam membatalkan pembayaran yang sudah dicatat.
     try{
-      const snap=await withTimeout(statusRef.once("value"),10000,"Pembacaan status denda");
-      const serverValue=snap.val();
-      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:serverValue===true}:l);
-      if(serverValue===nextValue){
+      const serverValue=(await withTimeout(statusRef.once("value"),12000,"Pembacaan status denda")).val();
+      if(serverValue===true || serverValue===false){
+        window.__maktabahFineStatusMap={...(window.__maktabahFineStatusMap||{}),[key]:serverValue};
+        state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:serverValue}:l);
         try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(storageError){}
-        showToast("Status LUNAS sudah tersimpan dan terverifikasi.","plum");
+        showToast(serverValue===nextValue?"Status LUNAS sudah tersimpan dan terverifikasi.":"Status belum berubah di server. Silakan periksa koneksi.",serverValue===nextValue?"plum":"rose");
       }else{
-        showToast("Status belum tersimpan. Periksa koneksi lalu tekan kembali.","rose");
+        throw new Error("Status server belum tersedia.");
       }
     }catch(readError){
-      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
-      showToast("Koneksi belum stabil. Status dipertahankan sementara; periksa koneksi sebelum mencoba lagi.","rose");
+      // Jangan tampilkan sukses bila server tidak dapat diverifikasi.
+      window.__maktabahFineStatusMap={...(window.__maktabahFineStatusMap||{}),[key]:previous};
+      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:previous}:l);
+      showToast("Belum dapat memastikan penyimpanan. Periksa koneksi sebelum mencoba lagi.","rose");
     }
-    try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(storageError){}
     renderContent();
   }finally{
     window.__maktabahLunasSaving.delete(key);
@@ -4408,24 +4467,10 @@ function bindScanConfirm(){
       // peminjaman, bukan seluruh database buku/anggota/pengaturan.
       try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
       if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap. Silakan masuk kembali dan coba simpan.");
-      const loansRef=db.ref(`${DATA_PATH}/loans`);
       const targetId=String(l.id);
       const returnedAt=iso(todayDate);
-      const result=await withTimeout(loansRef.transaction(current=>{
-        if(!Array.isArray(current)) return;
-        const index=current.findIndex(row=>row && String(row.id)===targetId);
-        if(index<0) return;
-        // Jangan menimpa transaksi yang sudah dikembalikan dari perangkat lain.
-        if(current[index].status==="dikembalikan") return current;
-        const updated=current.slice();
-        updated[index]={...updated[index],status:"dikembalikan",tanggalKembali:returnedAt};
-        return updated;
-      },undefined,false),12000,"Penyimpanan pengembalian");
-      if(!result || !result.committed) throw new Error("Transaksi belum tersimpan. Periksa apakah buku sudah dikembalikan dari perangkat lain, lalu muat ulang data.");
-      const savedLoans=result.snapshot.val();
-      const savedRow=Array.isArray(savedLoans)?savedLoans.find(row=>row && String(row.id)===targetId):null;
-      if(!savedRow || savedRow.status!=="dikembalikan") throw new Error("Firebase belum mengonfirmasi status pengembalian. Silakan periksa data sebelum mencoba lagi.");
-      state.loans=Array.isArray(savedLoans)?savedLoans:state.loans;
+      await saveReturnStatus(targetId,returnedAt);
+      state.loans=state.loans.map(row=>String(row.id)===targetId?{...row,status:"dikembalikan",tanggalKembali:returnedAt}:row);
       try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
       // Tutup konfirmasi begitu node transaksi sudah terverifikasi tersimpan.
       state.scanConfirm=null;
@@ -4436,7 +4481,8 @@ function bindScanConfirm(){
       Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn("Mirror publik belum diperbarui",e));
     }catch(err){
       state.loans=previousLoans;
-      try{if(previousPayload!==null)localStorage.setItem(STORAGE_KEY,previousPayload);else localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+      applyReturnStatusMap(window.__maktabahReturnStatusMap || {});
+      try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
       console.error("Gagal menyimpan pengembalian hasil scan",err);
       showToast(err?.message||"Pengembalian gagal disimpan. Periksa koneksi lalu coba lagi.","rose");
       renderModal();
