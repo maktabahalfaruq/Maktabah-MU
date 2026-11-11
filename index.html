@@ -1047,7 +1047,48 @@ function privateDataPayload(){
 }
 async function savePrivateFirebase(){
   if(!firebaseReady || !currentUser) return;
-  await db.ref(DATA_PATH).set(privateDataPayload());
+  const payload=privateDataPayload();
+  // Simpan daftar transaksi dengan merge berbasis ID di server. Jangan
+  // mengganti seluruh array loans memakai snapshot lokal yang mungkin usang
+  // dari perangkat lain; itu dapat menghilangkan pinjaman/pengembalian.
+  const loansRef=db.ref(`${DATA_PATH}/loans`);
+  const deleted=new Set((payload.deletedLoanIds||[]).map(String));
+  const returnMap=window.__maktabahReturnStatusMap||{};
+  const fineMap=window.__maktabahFineStatusMap||{};
+  const result=await withTimeout(loansRef.transaction(current=>{
+    const toRows=value=>Array.isArray(value)?value.filter(Boolean):
+      (value&&typeof value==='object'?Object.keys(value).sort((a,b)=>Number(a)-Number(b)).map(k=>value[k]).filter(Boolean):[]);
+    const serverRows=toRows(current);
+    const byId=new Map();
+    serverRows.forEach(row=>{if(row&&row.id!=null&&!deleted.has(String(row.id))) byId.set(String(row.id),row);});
+    toRows(payload.loans).forEach(row=>{
+      if(!row||row.id==null||deleted.has(String(row.id))) return;
+      const key=String(row.id), prior=byId.get(key);
+      const merged={...(prior||{}),...row};
+      const returned=returnMap[key];
+      if((prior&&prior.status==='dikembalikan')||(returned&&returned.status==='dikembalikan')){
+        merged.status='dikembalikan';
+        merged.tanggalKembali=(returned&&returned.tanggalKembali)||prior?.tanggalKembali||row.tanggalKembali||null;
+      }
+      if(Object.prototype.hasOwnProperty.call(fineMap,key)) merged.dendaLunas=fineMap[key]===true;
+      byId.set(key,merged);
+    });
+    return Array.from(byId.values());
+  },undefined,false),20000,'Sinkronisasi transaksi peminjaman');
+  if(!result||!result.committed) throw new Error('Transaksi peminjaman belum berhasil disinkronkan.');
+  const savedRows=result.snapshot.val();
+  const normalizedRows=Array.isArray(savedRows)?savedRows:
+    (savedRows&&typeof savedRows==='object'?Object.keys(savedRows).sort((a,b)=>Number(a)-Number(b)).map(k=>savedRows[k]).filter(Boolean):[]);
+  state.loans=normalizedRows;
+  // Perbarui hanya cabang data non-transaksi; transaksi loans ditangani
+  // terpisah agar dua perangkat tidak saling menimpa.
+  const nonLoanPayload={
+    books:payload.books, riwayatLoans:payload.riwayatLoans,
+    deletedLoanIds:payload.deletedLoanIds, kategoriList:payload.kategoriList,
+    anggota:payload.anggota, rakList:payload.rakList,
+    kontribList:payload.kontribList, targetLiterasi:payload.targetLiterasi
+  };
+  await db.ref(DATA_PATH).update(nonLoanPayload);
   if(isAdmin()) await db.ref(SETTINGS_PATH).set(state.settings);
   await savePublicMirror();
 }
