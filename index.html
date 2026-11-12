@@ -161,6 +161,18 @@ const firebaseConfig = {
   .data-table th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); border-bottom:2px solid var(--line); padding:8px 10px; white-space:nowrap; }
   .data-table td{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
   .data-table tr:last-child td{ border-bottom:none; }
+  /* Explicit, touch-friendly selection controls for print-only lists. */
+  .data-table input[type="checkbox"][data-print-item],
+  .data-table input[type="checkbox"][data-print-master]{
+    display:inline-block !important; visibility:visible !important; opacity:1 !important;
+    appearance:auto !important; -webkit-appearance:checkbox !important;
+    width:22px !important; height:22px !important; min-width:22px !important;
+    margin:0 4px !important; padding:0 !important; cursor:pointer !important;
+    accent-color:#355846 !important; vertical-align:middle !important;
+    position:static !important; pointer-events:auto !important;
+  }
+  .data-table th:has(> input[data-print-master]),
+  .data-table td:has(> input[data-print-item]){ width:42px; min-width:42px; text-align:center; padding-left:6px; padding-right:6px; }
   .data-table tr.report-late-return td{ background:#FFF0E8; color:#873F25; }
   .data-table tr.report-late-return td:first-child{ box-shadow:inset 4px 0 0 #B45D35; }
   .table-wrap{ overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:9px; }
@@ -3364,22 +3376,22 @@ function cetakHTML(){
   const s=state.sub;
   if(s==="kartuanggota") return cetakKartuAnggotaHTML();
   if(s==="kartubuku") return cetakKartuBukuHTML();
-  if(s==="label") return `<div class="panel"><h3 class="panel-title">Label / Barcode QR</h3><p class="hint" style="margin-bottom:14px;">Mencetak QR seluruh koleksi buku ke kertas biasa — bisa digunakan bersama fitur ${icon("scanLine",15)} Scan di Data Buku.</p><button class="btn btn-primary" id="btnCetakLabel2">${icon("printer",15)} Cetak Semua Label QR</button></div>`;
+  if(s==="label") return `<div class="panel"><h3 class="panel-title">Label / Barcode QR</h3><p class="hint" style="margin-bottom:14px;">Pilih buku yang label QR-nya ingin dicetak. Bisa memilih beberapa sekaligus.</p><div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-bottom:12px;"><button class="btn btn-outline btn-sm" type="button" data-print-select-all="label">Pilih Semua</button><button class="btn btn-outline btn-sm" type="button" data-print-clear="label">Batalkan Pilihan</button><button class="btn btn-primary" type="button" id="btnCetakLabel2">${icon("printer",15)} Cetak yang Dipilih (<span data-print-count="label">0</span>)</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th><input type="checkbox" class="print-select-box" aria-label="Pilih semua label" data-print-master="label"></th><th>Kode</th><th>Judul</th></tr></thead><tbody>${[...state.books].sort((a,b)=>a.kode.localeCompare(b.kode)).map(b=>`<tr><td><input type="checkbox" class="print-select-box" data-print-item="label" value="${esc(String(b.id))}" aria-label="Pilih ${esc(b.kode)}"></td><td><span class="kode-chip" style="background:${bookCodeColor(b.kode)}">${esc(b.kode)}</span></td><td>${esc(b.judul)}</td></tr>`).join("")}</tbody></table></div></div>`;
   if(s==="katalog") return cetakKatalogHTML();
   if(s==="bukti") return cetakBuktiHTML();
   return "";
 }
 function cetakKartuAnggotaHTML(){
   return `<div class="panel"><h3 class="panel-title">Kartu Anggota</h3>
-    <div class="toolbar"><button class="btn btn-primary" id="btnCetakSemuaKartu">${icon("printer",15)} Cetak Semua Kartu Anggota</button></div>
-    <div class="table-wrap"><table class="data-table"><thead><tr><th>NIS</th><th>Nama</th><th>Kelas</th><th></th></tr></thead><tbody>
-      ${state.anggota.map(a=>`<tr><td>${esc(a.nis)}</td><td>${esc(a.nama)}</td><td>Kls ${esc(a.kelas)}</td><td><button class="btn btn-outline btn-sm" data-printkartu="${a.id}">${icon("printer",15)} Cetak</button></td></tr>`).join("")}
+    <div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-bottom:12px;"><button class="btn btn-outline btn-sm" type="button" data-print-select-all="anggota">Pilih Semua</button><button class="btn btn-outline btn-sm" type="button" data-print-clear="anggota">Batalkan Pilihan</button><button class="btn btn-primary" type="button" id="btnCetakSemuaKartu">${icon("printer",15)} Cetak yang Dipilih (<span data-print-count="anggota">0</span>)</button></div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th><input type="checkbox" class="print-select-box" aria-label="Pilih semua anggota" data-print-master="anggota"></th><th>NIS</th><th>Nama</th><th>Kelas</th><th></th></tr></thead><tbody>
+      ${state.anggota.map(a=>`<tr><td><input type="checkbox" class="print-select-box" data-print-item="anggota" value="${esc(String(a.id))}" aria-label="Pilih ${esc(a.nama)}"></td><td>${esc(a.nis)}</td><td>${esc(a.nama)}</td><td>Kls ${esc(a.kelas)}</td><td><button class="btn btn-outline btn-sm" data-printkartu="${esc(String(a.id))}">${icon("printer",15)} Cetak</button></td></tr>`).join("")}
     </tbody></table></div></div>`;
 }
 function cetakKartuBukuHTML(){
-  return `<div class="panel"><div class="row-between"><div><h3 class="panel-title">Kartu Buku</h3><p class="hint" style="margin-bottom:14px;">Kartu info per buku dengan QR dan warna kode A/B/C/dst. — biasanya ditempel di sampul dalam buku.</p></div><button class="btn btn-primary" id="btnCetakSemuaKartuBuku">${icon("printer",15)} Cetak Semua Kartu Buku</button></div>
-    <div class="table-wrap"><table class="data-table"><thead><tr><th>Kode</th><th>Judul</th><th></th></tr></thead><tbody>
-      ${state.books.map(b=>`<tr><td><span class="kode-chip" style="background:${bookCodeColor(b.kode)}">${esc(b.kode)}</span></td><td>${esc(b.judul)}</td><td><button class="btn btn-outline btn-sm" data-printbukukartu="${b.id}">${icon("printer",15)} Cetak</button></td></tr>`).join("")}
+  return `<div class="panel"><div><h3 class="panel-title">Kartu Buku</h3><p class="hint" style="margin-bottom:14px;">Kartu info per buku dengan QR dan warna kode A/B/C/dst. — biasanya ditempel di sampul dalam buku.</p></div><div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-bottom:12px;"><button class="btn btn-outline btn-sm" type="button" data-print-select-all="buku">Pilih Semua</button><button class="btn btn-outline btn-sm" type="button" data-print-clear="buku">Batalkan Pilihan</button><button class="btn btn-primary" type="button" id="btnCetakSemuaKartuBuku">${icon("printer",15)} Cetak yang Dipilih (<span data-print-count="buku">0</span>)</button></div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th><input type="checkbox" class="print-select-box" aria-label="Pilih semua buku" data-print-master="buku"></th><th>Kode</th><th>Judul</th><th></th></tr></thead><tbody>
+      ${state.books.map(b=>`<tr><td><input type="checkbox" class="print-select-box" data-print-item="buku" value="${esc(String(b.id))}" aria-label="Pilih ${esc(b.kode)}"></td><td><span class="kode-chip" style="background:${bookCodeColor(b.kode)}">${esc(b.kode)}</span></td><td>${esc(b.judul)}</td><td><button class="btn btn-outline btn-sm" data-printbukukartu="${esc(String(b.id))}">${icon("printer",15)} Cetak</button></td></tr>`).join("")}
     </tbody></table></div></div>`;
 }
 function cetakKatalogHTML(){
@@ -3394,11 +3406,24 @@ function cetakBuktiHTML(){
     </tbody></table></div></div>`;
 }
 function bindCetakExtra(){
-  const b1=document.getElementById("btnCetakLabel2"); if(b1) b1.addEventListener("click", printLabels);
-  const b2=document.getElementById("btnCetakSemuaKartu"); if(b2) b2.addEventListener("click", printSemuaKartuAnggota);
-  const b2b=document.getElementById("btnCetakSemuaKartuBuku"); if(b2b) b2b.addEventListener("click", printSemuaKartuBuku);
   const b3=document.getElementById("btnCetakKatalog"); if(b3) b3.addEventListener("click", printKatalog);
   document.querySelectorAll("[data-printbukukartu]").forEach(b=>b.addEventListener("click", ()=>printKartuBuku(b.dataset.printbukukartu)));
+  const updatePrintSelection=(kind)=>{
+    const boxes=[...document.querySelectorAll(`[data-print-item="${kind}"]`)];
+    const selected=boxes.filter(x=>x.checked).length;
+    const count=document.querySelector(`[data-print-count="${kind}"]`); if(count) count.textContent=String(selected);
+    const master=document.querySelector(`[data-print-master="${kind}"]`); if(master){master.checked=boxes.length>0&&selected===boxes.length;master.indeterminate=selected>0&&selected<boxes.length;}
+  };
+  document.querySelectorAll("[data-print-select-all]").forEach(btn=>btn.addEventListener("click",()=>{const k=btn.dataset.printSelectAll;document.querySelectorAll(`[data-print-item="${k}"]`).forEach(x=>x.checked=true);updatePrintSelection(k);}));
+  document.querySelectorAll("[data-print-clear]").forEach(btn=>btn.addEventListener("click",()=>{const k=btn.dataset.printClear;document.querySelectorAll(`[data-print-item="${k}"]`).forEach(x=>x.checked=false);updatePrintSelection(k);}));
+  document.querySelectorAll("[data-print-master]").forEach(box=>box.addEventListener("change",()=>{const k=box.dataset.printMaster;document.querySelectorAll(`[data-print-item="${k}"]`).forEach(x=>x.checked=box.checked);updatePrintSelection(k);}));
+  document.querySelectorAll("[data-print-item]").forEach(box=>box.addEventListener("change",()=>updatePrintSelection(box.dataset.printItem)));
+  const selectedIds=kind=>[...document.querySelectorAll(`[data-print-item="${kind}"]:checked`)].map(x=>x.value);
+  const selectedAction=(id,kind,fn)=>{const ids=selectedIds(kind);if(!ids.length){showToast("Pilih minimal satu data untuk dicetak","rose");return;}fn(ids);};
+  const memberPrint=document.getElementById("btnCetakSemuaKartu"); if(memberPrint) memberPrint.addEventListener("click",()=>selectedAction(memberPrint,"anggota",printKartuAnggotaTerpilih));
+  const bookPrint=document.getElementById("btnCetakSemuaKartuBuku"); if(bookPrint) bookPrint.addEventListener("click",()=>selectedAction(bookPrint,"buku",printKartuBukuTerpilih));
+  const labelPrint=document.getElementById("btnCetakLabel2"); if(labelPrint) labelPrint.addEventListener("click",()=>selectedAction(labelPrint,"label",printLabels));
+  ["anggota","buku","label"].forEach(updatePrintSelection);
 }
 
 /* ============ SISTEM: SETTING ============ */
@@ -4634,8 +4659,9 @@ async function printAfterImages(delay=250){
   await new Promise(r=>setTimeout(r,delay));
   window.print();
 }
-function printLabels(){
-  const list=[...state.books].sort((a,b)=>a.kode.localeCompare(b.kode));
+function printLabels(ids=null){
+  const selected=ids?new Set(ids.map(String)):null;
+  const list=[...state.books].filter(b=>!selected||selected.has(String(b.id))).sort((a,b)=>a.kode.localeCompare(b.kode));
   if(list.length===0){ showToast("Belum ada buku untuk dicetak","rose"); return; }
   const area=document.getElementById("printArea");
   area.innerHTML = `<div class="label-grid">${list.map(b=>`<div class="label-card"><div class="qr"><img referrerpolicy="no-referrer" src="${qrImageUrl(qrPayloadBook(b.kode),140)}" width="140" height="140" alt="QR ${esc(b.kode)}"/></div><div class="label-kode">${esc(b.kode)}</div><div class="label-judul">${esc(b.judul)}</div><div class="label-brand">${esc(state.settings.namaMaktabah)} · Kalibagor</div></div>`).join("")}</div>`;
@@ -4665,29 +4691,40 @@ function printSemuaKartuAnggota(){
   area.innerHTML = `<div class="id-card-grid">${state.anggota.map(kartuAnggotaCardHTML).join("")}</div>`;
   printAfterImages(350);
 }
+function printKartuAnggotaTerpilih(ids){
+  const wanted=new Set(ids.map(String));
+  const list=state.anggota.filter(a=>wanted.has(String(a.id)));
+  if(!list.length){showToast("Data anggota terpilih tidak ditemukan","rose");return;}
+  document.getElementById("printArea").innerHTML=`<div class="id-card-grid">${list.map(kartuAnggotaCardHTML).join("")}</div>`;
+  printAfterImages(350);
+}
 
 /* ============ CETAK: KARTU BUKU ============ */
+function kartuBukuCardHTML(b){
+  const kat=katByKode(b.kategori);
+  const c=bookCodeColor(b.kode);
+  return `<div class="id-card book-card-print" style="border-left:8px solid ${c};"><div class="id-card-inner">
+    <div class="top-bar-print" style="height:8px;background:${c};margin:-14px -14px 12px -14px;"></div>
+    <div class="id-card-text"><div class="id-card-head">${esc(state.settings.namaMaktabah)}</div>
+    <div class="kode-chip-print" style="display:inline-flex;align-items:center;background:${c};color:#fff;font-weight:900;border-radius:7px;padding:5px 10px;font-family:monospace;font-size:11px;margin:6px 0 8px;">KODE ${esc(b.kode)}</div>
+    <div class="id-card-row"><b>Judul:</b> ${esc(b.judul)}</div><div class="id-card-row"><b>Penyusun:</b> ${esc(b.penyusun)}</div><div class="id-card-row"><b>Penerbit:</b> ${esc(b.penerbit)} (${esc(b.tahunTerbit)})</div><div class="id-card-row"><b>Kategori:</b> ${esc(kat.nama)}</div></div>
+    <div class="id-card-qr"><img referrerpolicy="no-referrer" src="${qrImageUrl(qrPayloadBook(b.kode),220)}" width="220" height="220" alt="QR ${esc(b.kode)}"/></div>
+  </div></div>`;
+}
 function printSemuaKartuBuku(){
   if(state.books.length===0){ showToast("Belum ada buku","rose"); return; }
   const area=document.getElementById("printArea");
   const list=[...state.books].sort((a,b)=>a.kode.localeCompare(b.kode));
-  area.innerHTML = `<div class="id-card-grid">${list.map(b=>{
-    const kat=katByKode(b.kategori);
-    const c=bookCodeColor(b.kode);
-    return `<div class="id-card book-card-print" style="border-left:8px solid ${c};"><div class="id-card-inner">
-      <div class="id-card-text">
-      <div class="top-bar-print" style="height:8px;background:${c};margin:-14px -14px 12px -14px;"></div>
-      <div class="id-card-head">${esc(state.settings.namaMaktabah)}</div>
-      <div class="kode-chip-print" style="display:inline-flex;align-items:center;background:${c};color:#fff;font-weight:900;border-radius:7px;padding:5px 10px;font-family:monospace;font-size:11px;margin:6px 0 8px;">KODE ${esc(b.kode)}</div>
-      <div class="id-card-row"><b>Judul:</b> ${esc(b.judul)}</div>
-      <div class="id-card-row"><b>Penyusun:</b> ${esc(b.penyusun)}</div><div class="id-card-row"><b>Penerbit:</b> ${esc(b.penerbit)} (${esc(b.tahunTerbit)})</div>
-      <div class="id-card-row"><b>Kategori:</b> ${esc(kat.nama)}</div>
-      </div>
-      <div class="id-card-qr"><img referrerpolicy="no-referrer" src="${qrImageUrl(qrPayloadBook(b.kode),220)}" width="220" height="220" alt="QR ${esc(b.kode)}"/></div>
-    </div></div>`;
-  }).join("")}</div>`;
+  area.innerHTML = `<div class="id-card-grid">${list.map(kartuBukuCardHTML).join("")}</div>`;
   // Cetak langsung dari aksi klik agar browser mobile tidak memblokir dialog print.
   window.print();
+}
+function printKartuBukuTerpilih(ids){
+  const wanted=new Set(ids.map(String));
+  const list=state.books.filter(b=>wanted.has(String(b.id))).sort((a,b)=>a.kode.localeCompare(b.kode));
+  if(!list.length){showToast("Data buku terpilih tidak ditemukan","rose");return;}
+  document.getElementById("printArea").innerHTML=`<div class="id-card-grid">${list.map(kartuBukuCardHTML).join("")}</div>`;
+  printAfterImages(350);
 }
 function printKartuBuku(bookId){
   const b=state.books.find(x=>x.id===bookId); if(!b){ showToast("Buku tidak ditemukan","rose"); return; }
