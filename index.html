@@ -901,6 +901,12 @@ let db=null,
     firebaseHydrated=false,
     saveTimer=null;
 
+// Antrean penyimpanan terpusat dan baseline server untuk mendeteksi perubahan lokal.
+let maktabahSaveQueue = Promise.resolve();
+let maktabahSaveInFlight = 0;
+let maktabahSavePending = 0;
+let maktabahServerBaseline = null;
+
 try{
   if(typeof firebase === "undefined"){
     throw new Error("Firebase SDK tidak termuat");
@@ -1050,6 +1056,7 @@ async function savePublicMirror(){
     state.publicStats=stats;
   }catch(e){ console.error("Gagal memperbarui katalog publik",e); }
 }
+
 function privateDataPayload(){
   return {
     books:state.books, loans:state.loans, riwayatLoans:state.riwayatLoans, deletedLoanIds:state.deletedLoanIds, kategoriList:state.kategoriList,
@@ -1057,62 +1064,267 @@ function privateDataPayload(){
     targetLiterasi:state.targetLiterasi
   };
 }
-async function savePrivateFirebase(){
-  if(!firebaseReady || !currentUser) return;
-  const payload=privateDataPayload();
-  // Simpan daftar transaksi dengan merge berbasis ID di server. Jangan
-  // mengganti seluruh array loans memakai snapshot lokal yang mungkin usang
-  // dari perangkat lain; itu dapat menghilangkan pinjaman/pengembalian.
-  const loansRef=db.ref(`${DATA_PATH}/loans`);
-  const deleted=new Set((payload.deletedLoanIds||[]).map(String));
-  const returnMap=window.__maktabahReturnStatusMap||{};
-  const fineMap=window.__maktabahFineStatusMap||{};
-  const result=await withTimeout(loansRef.transaction(current=>{
-    const toRows=value=>Array.isArray(value)?value.filter(Boolean):
-      (value&&typeof value==='object'?Object.keys(value).sort((a,b)=>Number(a)-Number(b)).map(k=>value[k]).filter(Boolean):[]);
-    const serverRows=toRows(current);
-    const byId=new Map();
-    serverRows.forEach(row=>{if(row&&row.id!=null&&!deleted.has(String(row.id))) byId.set(String(row.id),row);});
-    toRows(payload.loans).forEach(row=>{
-      if(!row||row.id==null||deleted.has(String(row.id))) return;
-      const key=String(row.id), prior=byId.get(key);
-      const merged={...(prior||{}),...row};
-      const returned=returnMap[key];
-      if((prior&&prior.status==='dikembalikan')||(returned&&returned.status==='dikembalikan')){
-        merged.status='dikembalikan';
-        merged.tanggalKembali=(returned&&returned.tanggalKembali)||prior?.tanggalKembali||row.tanggalKembali||null;
-      }
-      if(Object.prototype.hasOwnProperty.call(fineMap,key)) merged.dendaLunas=fineMap[key]===true;
-      byId.set(key,merged);
+function maktabahClone(value){
+  if(value===undefined) return undefined;
+  try{return JSON.parse(JSON.stringify(value));}catch(e){return value;}
+}
+function maktabahRows(value){
+  if(Array.isArray(value)) return value.filter(Boolean);
+  if(value && typeof value==='object'){
+    return Object.keys(value).sort((a,b)=>{
+      const na=Number(a), nb=Number(b);
+      return Number.isFinite(na)&&Number.isFinite(nb)?na-nb:a.localeCompare(b);
+    }).map(k=>value[k]).filter(Boolean);
+  }
+  return [];
+}
+function maktabahEntityKey(collection,row,index){
+  if(!row || typeof row!=='object') return null;
+  const candidates={
+    books:['id','kode','isbn'],
+    loans:['id'],
+    anggota:['id','nis','nomorInduk'],
+    kategoriList:['id','kode','nama'],
+    rakList:['id','kode','nama'],
+    kontribList:['id','nama'],
+    targetLiterasi:['id','tahun','kelas','nama']
+  }[collection] || ['id','kode'];
+  for(const field of candidates){
+    const value=row[field];
+    if(value!==undefined && value!==null && String(value).trim()!=='') return `${field}:${String(value)}`;
+  }
+  return `__index:${index}`;
+}
+function maktabahChangedFields(before,after){
+  const changed={};
+  const keys=new Set([...Object.keys(before||{}),...Object.keys(after||{})]);
+  keys.forEach(key=>{
+    if(JSON.stringify((before||{})[key])!==JSON.stringify((after||{})[key])){
+      if(Object.prototype.hasOwnProperty.call(after||{},key)) changed[key]=after[key];
+      else changed[key]=null;
+    }
+  });
+  return changed;
+}
+function maktabahRebaseLocal(collection, capturedRows, currentRows, savedRows){
+  const captured=maktabahRows(capturedRows), current=maktabahRows(currentRows), saved=maktabahRows(savedRows);
+  const baseMap=new Map(), currentMap=new Map(), savedMap=new Map();
+  captured.forEach((row,i)=>baseMap.set(maktabahEntityKey(collection,row,i),row));
+  current.forEach((row,i)=>currentMap.set(maktabahEntityKey(collection,row,i),row));
+  saved.forEach((row,i)=>savedMap.set(maktabahEntityKey(collection,row,i),row));
+  baseMap.forEach((baseRow,key)=>{
+    if(!currentMap.has(key)){ savedMap.delete(key); return; }
+    if(!savedMap.has(key)) return; // record dihapus dari server oleh perangkat lain
+    const patch=maktabahChangedFields(baseRow,currentMap.get(key));
+    if(Object.keys(patch).length){
+      const merged={...savedMap.get(key)};
+      Object.entries(patch).forEach(([field,value])=>{
+        if(value===null) delete merged[field]; else merged[field]=value;
+      });
+      savedMap.set(key,merged);
+    }
+  });
+  currentMap.forEach((row,key)=>{if(!baseMap.has(key)) savedMap.set(key,row);});
+  return Array.from(savedMap.values());
+}
+async function maktabahSyncArray(collection, localRows, baselineRows, deletedLoanKeys=new Set()){
+  const ref=db.ref(`${DATA_PATH}/${collection}`);
+  let committedRows=null;
+  const local=maktabahRows(localRows).filter(row=>collection!=='loans' || !deletedLoanKeys.has(String(row?.id)));
+  const baseline=maktabahRows(baselineRows);
+  const result=await withTimeout(ref.transaction(current=>{
+    const server=maktabahRows(current);
+    const serverMap=new Map();
+    server.forEach((row,i)=>{
+      const key=maktabahEntityKey(collection,row,i);
+      if(key!==null && !(collection==='loans' && deletedLoanKeys.has(String(row?.id)))) serverMap.set(key,row);
     });
-    return Array.from(byId.values());
-  },undefined,false),20000,'Sinkronisasi transaksi peminjaman');
-  if(!result||!result.committed) throw new Error('Transaksi peminjaman belum berhasil disinkronkan.');
-  const savedRows=result.snapshot.val();
-  const normalizedRows=Array.isArray(savedRows)?savedRows:
-    (savedRows&&typeof savedRows==='object'?Object.keys(savedRows).sort((a,b)=>Number(a)-Number(b)).map(k=>savedRows[k]).filter(Boolean):[]);
-  state.loans=normalizedRows;
-  // Perbarui hanya cabang data non-transaksi; transaksi loans ditangani
-  // terpisah agar dua perangkat tidak saling menimpa.
-  const nonLoanPayload={
-    books:payload.books, riwayatLoans:payload.riwayatLoans,
-    deletedLoanIds:payload.deletedLoanIds, kategoriList:payload.kategoriList,
-    anggota:payload.anggota, rakList:payload.rakList,
-    kontribList:payload.kontribList, targetLiterasi:payload.targetLiterasi
+    const baseMap=new Map();
+    baseline.forEach((row,i)=>{
+      const key=maktabahEntityKey(collection,row,i);
+      if(key!==null) baseMap.set(key,row);
+    });
+    const localMap=new Map();
+    local.forEach((row,i)=>{
+      const key=maktabahEntityKey(collection,row,i);
+      if(key!==null) localMap.set(key,row);
+    });
+
+    // Bila belum ada baseline (mis. instalasi awal), jangan pernah menghapus
+    // data server yang sudah ada; hanya tambahkan record yang belum ada.
+    if(!maktabahServerBaseline){
+      localMap.forEach((row,key)=>{if(!serverMap.has(key)) serverMap.set(key,row);});
+    }else{
+      // Terapkan hanya perubahan yang dibuat sejak snapshot server terakhir.
+      baseMap.forEach((baseRow,key)=>{
+        if(collection==='loans' && deletedLoanKeys.has(String(baseRow?.id))){ serverMap.delete(key); return; }
+        if(!localMap.has(key)){ serverMap.delete(key); return; }
+        const localRow=localMap.get(key);
+        const patch=maktabahChangedFields(baseRow,localRow);
+        if(Object.keys(patch).length){
+          // Jangan menghidupkan kembali record yang sudah dihapus perangkat lain.
+          if(!serverMap.has(key)) return;
+          const currentRow=serverMap.get(key);
+          const merged={...currentRow};
+          Object.entries(patch).forEach(([field,value])=>{
+            if(value===null) delete merged[field];
+            else merged[field]=value;
+          });
+          serverMap.set(key,merged);
+        }
+      });
+      // Record baru ditambahkan berdasarkan ID unik, tanpa mengganti record lain.
+      localMap.forEach((row,key)=>{if(!baseMap.has(key) && !serverMap.has(key)) serverMap.set(key,row);});
+    }
+    committedRows=Array.from(serverMap.values());
+    return committedRows;
+  },undefined,false),20000,`Penyimpanan ${collection}`);
+  if(!result || !result.committed) throw new Error(`Firebase belum mengonfirmasi penyimpanan ${collection}.`);
+  const saved=maktabahRows(result.snapshot.val());
+  return saved;
+}
+async function savePrivateFirebase(){
+  if(!firebaseReady || !db || !currentUser) throw new Error('Firebase atau sesi pengguna belum siap.');
+  const payload=maktabahClone(privateDataPayload());
+  const baseline=maktabahClone(maktabahServerBaseline)||{};
+  const collections=['books','loans','anggota','kategoriList','rakList','kontribList','targetLiterasi'];
+  const saved={};
+  // Tombstone disinkronkan lebih dahulu agar transaksi yang telah dihapus
+  // tidak dapat dihidupkan kembali oleh perangkat dengan snapshot lama.
+  const deletedRef=db.ref(`${DATA_PATH}/deletedLoanIds`);
+  const deletedResult=await withTimeout(deletedRef.transaction(current=>{
+    const merged=new Set([
+      ...maktabahRows(current).map(String),
+      ...(payload.deletedLoanIds||[]).map(String)
+    ]);
+    return Array.from(merged);
+  },undefined,false),15000,'Sinkronisasi penghapusan transaksi');
+  if(!deletedResult || !deletedResult.committed) throw new Error('Daftar penghapusan belum tersimpan.');
+  saved.deletedLoanIds=maktabahRows(deletedResult.snapshot.val()).map(String);
+  const deletedLoanKeys=new Set(saved.deletedLoanIds);
+  // Jalankan transaksi tiap koleksi secara terpisah: perubahan buku tidak
+  // menulis ulang anggota/peminjaman, dan sebaliknya.
+  for(const collection of collections){
+    saved[collection]=await maktabahSyncArray(collection,payload[collection],baseline[collection],deletedLoanKeys);
+  }
+
+  // Arsip lama dipertahankan di Firebase; tidak ditimpa array kosong dari UI.
+  const settingsRef=db.ref(SETTINGS_PATH);
+  if(isAdmin()){
+    const settingsBaseline=baseline.settings||{};
+    const settingsLocal=state.settings||{};
+    const settingsPatch=maktabahChangedFields(settingsBaseline,settingsLocal);
+    if(Object.keys(settingsPatch).length){
+      const settingsResult=await withTimeout(settingsRef.transaction(current=>{
+        const merged={...(current||{})};
+        Object.entries(settingsPatch).forEach(([field,value])=>{
+          if(value===null) delete merged[field]; else merged[field]=value;
+        });
+        return merged;
+      },undefined,false),15000,'Penyimpanan pengaturan');
+      if(!settingsResult || !settingsResult.committed) throw new Error('Pengaturan belum tersimpan.');
+      saved.settings=settingsResult.snapshot.val()||{};
+    }else{
+      saved.settings=maktabahClone(settingsBaseline);
+    }
+  }
+
+  // Rebase hasil server dengan perubahan lokal yang mungkin dibuat pengguna
+  // ketika transaksi Firebase masih berjalan. Data remote baru tidak hilang,
+  // sementara edit lokal setelah snapshot tetap menunggu antrean berikutnya.
+  collections.forEach(collection=>{
+    state[collection]=maktabahRebaseLocal(collection,payload[collection],state[collection],saved[collection]);
+  });
+  const currentDeleted=new Set((state.deletedLoanIds||[]).map(String));
+  (saved.deletedLoanIds||[]).forEach(id=>currentDeleted.add(String(id)));
+  state.deletedLoanIds=Array.from(currentDeleted);
+
+  // Baseline diperbarui hanya setelah setiap cabang di atas terkonfirmasi.
+  maktabahServerBaseline={
+    ...maktabahClone(baseline),
+    ...maktabahClone(saved),
+    books:maktabahClone(saved.books),
+    loans:maktabahClone(saved.loans),
+    anggota:maktabahClone(saved.anggota),
+    kategoriList:maktabahClone(saved.kategoriList),
+    rakList:maktabahClone(saved.rakList),
+    kontribList:maktabahClone(saved.kontribList),
+    targetLiterasi:maktabahClone(saved.targetLiterasi)
   };
-  await db.ref(DATA_PATH).update(nonLoanPayload);
-  if(isAdmin()) await db.ref(SETTINGS_PATH).set(state.settings);
-  await savePublicMirror();
+  // Sinkronkan status khusus agar transaksi lama tidak mengembalikan status.
+  saved.loans=maktabahRows(saved.loans).map(row=>{
+    const key=String(row.id);
+    const returned=(window.__maktabahReturnStatusMap||{})[key];
+    const fine=(window.__maktabahFineStatusMap||{});
+    let next={...row};
+    if(returned && returned.status==='dikembalikan'){
+      next.status='dikembalikan';
+      next.tanggalKembali=returned.tanggalKembali||next.tanggalKembali||null;
+    }
+    if(Object.prototype.hasOwnProperty.call(fine,key)) next.dendaLunas=fine[key]===true;
+    return next;
+  });
+  try{await savePublicMirror();}catch(e){console.warn('Mirror publik tertunda',e);}
+  return true;
+}
+async function refreshMissedRealtimeAfterSave(){
+  if(!firebaseReady || !db || !currentUser || saveTimer!==null || maktabahSavePending>0) return;
+  try{
+    const [dataSnap,settingsSnap,fineSnap,returnSnap]=await Promise.all([
+      withTimeout(db.ref(DATA_PATH).once('value'),10000,'Penyegaran data Firebase'),
+      withTimeout(db.ref(SETTINGS_PATH).once('value'),10000,'Penyegaran pengaturan'),
+      withTimeout(db.ref(FINE_STATUS_PATH).once('value'),10000,'Penyegaran denda'),
+      withTimeout(db.ref(RETURN_STATUS_PATH).once('value'),10000,'Penyegaran pengembalian')
+    ]);
+    const server=dataSnap.val()||{};
+    const baseline=maktabahServerBaseline||{};
+    ['books','loans','anggota','kategoriList','rakList','kontribList','targetLiterasi'].forEach(collection=>{
+      state[collection]=maktabahRebaseLocal(collection,baseline[collection],state[collection],server[collection]);
+    });
+    const serverSettings=settingsSnap.val()||{};
+    const localSettings=state.settings||{};
+    const localPatch=maktabahChangedFields(baseline.settings||{},localSettings);
+    state.settings={...serverSettings};
+    Object.entries(localPatch).forEach(([field,value])=>{
+      if(value===null) delete state.settings[field]; else state.settings[field]=value;
+    });
+    maktabahServerBaseline=maktabahClone(server);
+    maktabahServerBaseline.settings=maktabahClone(serverSettings);
+    applyFineStatusMap(fineSnap.val());
+    applyReturnStatusMap(returnSnap.val());
+    try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+    if(state.view==='admin') render();
+  }catch(e){console.warn('Penyegaran sinkronisasi tertunda',e);}
+}
+function enqueuePrivateSave(){
+  maktabahSavePending++;
+  maktabahSaveQueue=maktabahSaveQueue.catch(()=>{}).then(async()=>{
+    maktabahSaveInFlight++;
+    try{ await savePrivateFirebase(); }
+    finally{
+      maktabahSaveInFlight=Math.max(0,maktabahSaveInFlight-1);
+      maktabahSavePending=Math.max(0,maktabahSavePending-1);
+      if(maktabahSavePending===0 && saveTimer===null && window.__maktabahRealtimeMissed){
+        window.__maktabahRealtimeMissed=false;
+        await refreshMissedRealtimeAfterSave();
+      }
+    }
+  });
+  return maktabahSaveQueue;
 }
 function scheduleSave(){
   clearTimeout(saveTimer);
-  saveTimer=setTimeout(async()=>{
+  saveTimer=setTimeout(()=>{
+    saveTimer=null;
     const payload=persistPayload();
-    try{ localStorage.setItem(STORAGE_KEY,payload); }catch(e){}
+    try{localStorage.setItem(STORAGE_KEY,payload);}catch(e){}
     if(firebaseReady && currentUser){
-      try{
-        await savePrivateFirebase();
-      }catch(e){ console.error("Gagal menyimpan ke Firebase",e); showToast("Firebase gagal menyimpan. Cek koneksi atau hak akses.","rose"); }
+      // Satu antrean serial mencegah dua penyimpanan dari perangkat ini saling
+      // mendahului. Snapshot server hanya diterapkan setelah commit terkonfirmasi.
+      enqueuePrivateSave().catch(e=>{
+        console.error('Gagal menyimpan ke Firebase',e);
+        showToast('Firebase gagal menyimpan. Perubahan belum terkonfirmasi; periksa koneksi dan coba lagi.','rose');
+      });
     }
   },350);
 }
@@ -1188,12 +1400,14 @@ async function loadPrivateData(){
     const fineStatusVal=fineStatusSnap.val();
     const returnStatusVal=returnStatusSnap.val();
     if(dataVal) applyPersisted({...dataVal, ...(settingsVal?{settings:settingsVal}: {})});
-    else if(legacyVal){
+    maktabahServerBaseline=maktabahClone(dataVal||{});
+    if(settingsVal) maktabahServerBaseline.settings=maktabahClone(settingsVal);
+    if(!dataVal && legacyVal){
       applyPersisted(legacyVal);
-      await savePrivateFirebase();
-    }else{
+      await enqueuePrivateSave();
+    }else if(!dataVal){
       const local=localStorage.getItem(STORAGE_KEY);
-      if(local && applyPersisted(local)) await savePrivateFirebase();
+      if(local && applyPersisted(local)) await enqueuePrivateSave();
     }
     ensureStateShape();
     applyFineStatusMap(fineStatusVal);
@@ -1231,8 +1445,10 @@ function bindPrivateRealtime(){
     // masih berisi data lama. Snapshot lama inilah yang dapat memunculkan kembali
     // riwayat sesaat setelah tombol hapus ditekan.
     if(window.__maktabahDeleteInProgress || window.__maktabahReturnSaving || (window.__maktabahLunasSaving && window.__maktabahLunasSaving.size)) return;
+    if(maktabahSaveInFlight>0 || maktabahSavePending>0 || saveTimer!==null){ window.__maktabahRealtimeMissed=true; return; }
     const val=snap.val(); if(!val) return;
     applyPersisted(val);
+    maktabahServerBaseline=maktabahClone(val||{}); 
     applyFineStatusMap(window.__maktabahFineStatusMap || {});
     applyReturnStatusMap(window.__maktabahReturnStatusMap || {});
     state.privateDataReady=true;
@@ -1241,7 +1457,10 @@ function bindPrivateRealtime(){
     if(state.view==="admin") render();
   };
   const settingsListener=snap=>{
+    if(maktabahSaveInFlight>0 || maktabahSavePending>0 || saveTimer!==null){ window.__maktabahRealtimeMissed=true; return; }
     const val=snap.val(); if(!val) return;
+    if(!maktabahServerBaseline) maktabahServerBaseline={};
+    maktabahServerBaseline.settings=maktabahClone(val);
     state.settings={...state.settings,...val};
     ensureStateShape();
     normalizeSettings();
@@ -3185,7 +3404,7 @@ async function deleteLoan(id){
   state.riwayatLoans = (state.riwayatLoans||[]).filter(x=>String(x.id)!==String(id));
   try{
     try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
-    if(firebaseReady && currentUser) await savePrivateFirebase();
+    if(firebaseReady && currentUser) await enqueuePrivateSave();
     showToast("Transaksi dan riwayatnya dihapus","rose");
   }catch(e){
     console.error("Gagal menyimpan penghapusan riwayat",e);
@@ -3207,7 +3426,7 @@ async function clearHistoryLoans(){
   state.riwayatLoans = (state.riwayatLoans||[]).filter(l=>!histIds.has(String(l.id)));
   try{
     try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
-    if(firebaseReady && currentUser) await savePrivateFirebase();
+    if(firebaseReady && currentUser) await enqueuePrivateSave();
     showToast("Riwayat pengembalian dihapus","rose");
   }catch(e){
     console.error("Gagal menyimpan penghapusan riwayat",e);
