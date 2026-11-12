@@ -4233,18 +4233,38 @@ function scanModalHTML(){
     <div class="modal-header"><div><h3 class="modal-title">${title}</h3><div class="hint" style="margin-top:3px;">${state.scanTxnMemberId && m==="loan-book" ? `Anggota: <b>${esc((anggotaById(state.scanTxnMemberId)||{}).nama||'-')}</b>` : ''}</div></div><button class="close-x" id="closeScanModal">${icon("x",15)}</button></div>
     <div class="scan-video-wrap"><video id="scanVideo" playsinline muted></video><div class="scan-frame"></div></div>
     <p class="scan-hint">${hint}</p>
+    <div style="margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft,rgba(127,127,127,.06));">
+      <label for="physicalScannerInput" style="display:block;font-size:12px;font-weight:700;margin-bottom:6px;color:var(--ink);">Atau gunakan barcode scanner USB / Bluetooth</label>
+      <input id="physicalScannerInput" type="text" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Klik di sini, lalu scan barcode..." style="width:100%;min-height:44px;" />
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:5px;">Pastikan scanner mengirim tombol Enter setelah membaca kode.</div>
+    </div>
   </div></div>`;
 }
 function bindScanModal(){
   document.getElementById("scanBackdrop").addEventListener("click", e=>{ if(e.target.id==="scanBackdrop") stopScan(); });
   document.getElementById("closeScanModal").addEventListener("click", stopScan);
+  const physicalInput=document.getElementById("physicalScannerInput");
+  if(physicalInput){
+    physicalInput.addEventListener("keydown",e=>{
+      if(e.key==="Enter"){
+        e.preventDefault();
+        const code=physicalInput.value.trim();
+        physicalInput.value="";
+        if(code) handleScanResult(code);
+      }
+    });
+    physicalInput.addEventListener("blur",()=>{
+      if(state.scanOpen) setTimeout(()=>{ const el=document.getElementById("physicalScannerInput"); if(el) el.focus({preventScroll:true}); },180);
+    });
+    physicalInput.focus({preventScroll:true});
+  }
   startScan();
 }
 async function startScan(){
   try{
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-      showToast("Kamera tidak didukung di browser ini. Gunakan Chrome/Brave/Safari terbaru.","rose");
-      stopScan(); return;
+      showToast("Kamera tidak tersedia. Anda tetap bisa menggunakan barcode scanner USB/Bluetooth.","rose");
+      return;
     }
 
     // Kamera belakang + resolusi yang cukup untuk QR/barcode kecil.
@@ -4292,7 +4312,7 @@ async function startScan(){
     // Ini membuat pembukaan scanner lebih cepat pada Chrome Android yang mendukung native detector.
     let ok=true;
     if(!detector) ok=await ensureJsQR();
-    if(!ok && !detector){ stopScan(); return; }
+    if(!ok && !detector){ showToast("Pemindai kamera tidak siap. Gunakan barcode scanner USB/Bluetooth.","rose"); return; }
 
     scanLastTime=0;
     scanBusy=false;
@@ -4300,8 +4320,7 @@ async function startScan(){
     scanLoopRobust(detector);
   }catch(e){
     console.error("Scanner error",e);
-    showToast("Tidak bisa akses kamera — izinkan kamera dan buka website melalui HTTPS.","rose");
-    stopScan();
+    showToast("Kamera tidak dapat diakses. Barcode scanner USB/Bluetooth tetap bisa digunakan.","rose");
   }
 }
 
@@ -4465,7 +4484,9 @@ function handleScanResult(text){
     const memberEl=document.querySelector("#scanBackdrop .modal-header .hint");
     if(titleEl) titleEl.textContent="Peminjaman — Scan Buku";
     if(memberEl) memberEl.innerHTML=`Anggota: <b>${esc(a.nama||'-')}</b>`;
-    if(hintEl) hintEl.textContent="✓ Anggota terbaca. Sekarang arahkan kamera ke QR buku. Tidak perlu terburu-buru — kamera tetap aktif sampai buku terbaca.";
+    if(hintEl) hintEl.textContent="✓ Anggota terbaca. Sekarang scan barcode/QR buku. Kamera tetap aktif, atau gunakan scanner fisik.";
+    const physicalInput=document.getElementById("physicalScannerInput");
+    if(physicalInput){ physicalInput.value=""; physicalInput.focus({preventScroll:true}); }
 
     showToast(`✓ Anggota ${a.nama} terbaca — silakan arahkan ke QR buku`,"plum");
     return;
