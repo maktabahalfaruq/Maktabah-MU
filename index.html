@@ -255,10 +255,30 @@ const firebaseConfig = {
   .print-table{ width:100%; border-collapse:collapse; font-size:11px; }
   .print-table th, .print-table td{ border:1px solid #999; padding:5px 7px; text-align:left; }
 
+  @page{ size:A4 portrait; margin:8mm; }
   @media print{
+    html, body{ width:100% !important; min-height:0 !important; margin:0 !important; padding:0 !important; background:#fff !important; }
     body *{ visibility:hidden; }
+    body input[type="checkbox"], body button, body .toolbar{ display:none !important; }
     #printArea, #printArea *{ visibility:visible; }
-    #printArea{ display:block; position:absolute; top:0; left:0; width:100%; padding:10px; }
+    #printArea{ display:block !important; position:absolute; top:0; left:0; width:100%; margin:0; padding:0; }
+    /* Label QR: empat kolom rapi pada kertas A4, tanpa kontrol pilihan ikut tercetak. */
+    #printArea .label-grid{
+      display:grid !important; grid-template-columns:repeat(4,minmax(0,1fr)) !important;
+      grid-auto-rows:auto; align-items:stretch; justify-content:stretch;
+      gap:3mm !important; width:100%; margin:0; padding:0;
+    }
+    #printArea .label-card{
+      display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+      box-sizing:border-box; width:100%; min-width:0; min-height:48mm;
+      margin:0; padding:2.5mm 1.5mm; border:0.25mm dashed #999;
+      border-radius:1mm; break-inside:avoid; page-break-inside:avoid; overflow:hidden;
+    }
+    #printArea .label-card .qr{ display:flex; justify-content:center; align-items:center; width:100%; margin:0 0 1.5mm; }
+    #printArea .label-card .qr img{ display:block; width:27mm !important; height:27mm !important; max-width:100%; object-fit:contain; }
+    #printArea .label-kode{ font-size:9pt; line-height:1.15; margin:0 0 1mm; }
+    #printArea .label-judul{ font-size:7pt; line-height:1.15; margin:0; overflow-wrap:anywhere; }
+    #printArea .label-brand{ font-size:5.5pt; line-height:1.15; margin-top:1mm; overflow-wrap:anywhere; }
     /* ID/KTP card size: 85.6mm x 54mm, 2 columns x 4 rows = 8 per A4 page */
     #printArea .id-card-grid{
       grid-template-columns:repeat(2, 85.6mm); grid-auto-rows:54mm;
