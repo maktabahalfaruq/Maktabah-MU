@@ -1152,7 +1152,7 @@ async function maktabahSyncArray(collection, localRows, baselineRows, deletedLoa
   let committedRows=null;
   const local=maktabahRows(localRows).filter(row=>collection!=='loans' || !deletedLoanKeys.has(String(row?.id)));
   const baseline=maktabahRows(baselineRows);
-  const result=await withTimeout(ref.transaction(current=>{
+  const result=await ref.transaction(current=>{
     const server=maktabahRows(current);
     const serverMap=new Map();
     server.forEach((row,i)=>{
@@ -1198,7 +1198,7 @@ async function maktabahSyncArray(collection, localRows, baselineRows, deletedLoa
     }
     committedRows=Array.from(serverMap.values());
     return committedRows;
-  },undefined,false),20000,`Penyimpanan ${collection}`);
+  },undefined,false);
   if(!result || !result.committed) throw new Error(`Firebase belum mengonfirmasi penyimpanan ${collection}.`);
   const saved=maktabahRows(result.snapshot.val());
   return saved;
@@ -1208,50 +1208,114 @@ async function savePrivateFirebase(){
   const payload=maktabahClone(privateDataPayload());
   const baseline=maktabahClone(maktabahServerBaseline)||{};
   const collections=['books','loans','anggota','kategoriList','rakList','kontribList','targetLiterasi'];
-  const saved={};
-  // Tombstone disinkronkan lebih dahulu agar transaksi yang telah dihapus
-  // tidak dapat dihidupkan kembali oleh perangkat dengan snapshot lama.
-  const deletedRef=db.ref(`${DATA_PATH}/deletedLoanIds`);
-  const deletedResult=await withTimeout(deletedRef.transaction(current=>{
-    const merged=new Set([
-      ...maktabahRows(current).map(String),
+  // Data utama dan pengaturan berada dalam satu transaksi pada parent private.
+  // Status denda/pengembalian tetap berada pada cabang khusus yang dikelola
+  // oleh aksi masing-masing, sehingga tidak tertimpa oleh penyimpanan koleksi.
+  const settingsPatch=isAdmin()?maktabahChangedFields(baseline.settings||{},state.settings||{}):{};
+  const privateRef=db.ref('maktabahAlFaruq/private');
+  let detectedConflicts=[];
+  const tx=await privateRef.transaction(currentPrivate=>{
+    detectedConflicts=[];
+    const root={...(currentPrivate||{})};
+    const serverData={...(root.data||{})};
+    const deleted=new Set([
+      ...maktabahRows(serverData.deletedLoanIds).map(String),
       ...(payload.deletedLoanIds||[]).map(String)
     ]);
-    return Array.from(merged);
-  },undefined,false),15000,'Sinkronisasi penghapusan transaksi');
-  if(!deletedResult || !deletedResult.committed) throw new Error('Daftar penghapusan belum tersimpan.');
-  saved.deletedLoanIds=maktabahRows(deletedResult.snapshot.val()).map(String);
-  const deletedLoanKeys=new Set(saved.deletedLoanIds);
-  // Jalankan transaksi tiap koleksi secara terpisah: perubahan buku tidak
-  // menulis ulang anggota/peminjaman, dan sebaliknya.
-  for(const collection of collections){
-    saved[collection]=await maktabahSyncArray(collection,payload[collection],baseline[collection],deletedLoanKeys);
-  }
+    serverData.deletedLoanIds=Array.from(deleted);
+    const deletedLoanKeys=new Set(serverData.deletedLoanIds);
 
-  // Arsip lama dipertahankan di Firebase; tidak ditimpa array kosong dari UI.
-  const settingsRef=db.ref(SETTINGS_PATH);
-  if(isAdmin()){
-    const settingsBaseline=baseline.settings||{};
-    const settingsLocal=state.settings||{};
-    const settingsPatch=maktabahChangedFields(settingsBaseline,settingsLocal);
-    if(Object.keys(settingsPatch).length){
-      const settingsResult=await withTimeout(settingsRef.transaction(current=>{
-        const merged={...(current||{})};
-        Object.entries(settingsPatch).forEach(([field,value])=>{
-          if(value===null) delete merged[field]; else merged[field]=value;
+    collections.forEach(collection=>{
+      const local=maktabahRows(payload[collection]).filter(row=>collection!=='loans' || !deletedLoanKeys.has(String(row?.id)));
+      const base=maktabahRows(baseline[collection]);
+      const server=maktabahRows(serverData[collection]);
+      const serverMap=new Map();
+      server.forEach((row,i)=>{
+        const key=maktabahEntityKey(collection,row,i);
+        if(key!==null && !(collection==='loans' && deletedLoanKeys.has(String(row?.id)))) serverMap.set(key,row);
+      });
+      const baseMap=new Map();
+      base.forEach((row,i)=>{const key=maktabahEntityKey(collection,row,i);if(key!==null)baseMap.set(key,row);});
+      const localMap=new Map();
+      local.forEach((row,i)=>{const key=maktabahEntityKey(collection,row,i);if(key!==null)localMap.set(key,row);});
+
+      if(!maktabahServerBaseline){
+        localMap.forEach((row,key)=>{if(!serverMap.has(key))serverMap.set(key,row);});
+      }else{
+        baseMap.forEach((baseRow,key)=>{
+          if(collection==='loans' && deletedLoanKeys.has(String(baseRow?.id))){serverMap.delete(key);return;}
+          if(!localMap.has(key)){
+            const remoteRow=serverMap.get(key);
+            if(remoteRow && JSON.stringify(remoteRow)!==JSON.stringify(baseRow)){
+              detectedConflicts.push(`${collection}:${key} (hapus vs perubahan perangkat lain)`);
+            }else{
+              serverMap.delete(key);
+            }
+            return;
+          }
+          const localRow=localMap.get(key);
+          const patch=maktabahChangedFields(baseRow,localRow);
+          if(Object.keys(patch).length){
+            if(!serverMap.has(key)){
+              // Perangkat lain menghapus record yang sedang diedit secara lokal.
+              // Jangan diam-diam mengabaikan edit atau menghidupkan kembali record.
+              detectedConflicts.push(`${collection}:${key} (data dihapus perangkat lain saat sedang diedit)`);
+              return;
+            }
+            const remoteRow=serverMap.get(key);
+            // Jika perangkat lain mengubah field yang sama sejak baseline,
+            // jangan diam-diam menimpa perubahan tersebut (same-field conflict).
+            Object.keys(patch).forEach(field=>{
+              const baseValue=baseRow?.[field];
+              const remoteValue=remoteRow?.[field];
+              const localValue=patch[field]===null?undefined:patch[field];
+              if(JSON.stringify(remoteValue)!==JSON.stringify(baseValue) && JSON.stringify(remoteValue)!==JSON.stringify(localValue)){
+                detectedConflicts.push(`${collection}:${key}.${field}`);
+              }
+            });
+            const merged={...remoteRow};
+            Object.entries(patch).forEach(([field,value])=>{if(value===null)delete merged[field];else merged[field]=value;});
+            serverMap.set(key,merged);
+          }
         });
-        return merged;
-      },undefined,false),15000,'Penyimpanan pengaturan');
-      if(!settingsResult || !settingsResult.committed) throw new Error('Pengaturan belum tersimpan.');
-      saved.settings=settingsResult.snapshot.val()||{};
-    }else{
-      saved.settings=maktabahClone(settingsBaseline);
+        localMap.forEach((row,key)=>{if(!baseMap.has(key)&&!serverMap.has(key))serverMap.set(key,row);});
+      }
+      serverData[collection]=Array.from(serverMap.values());
+    });
+    if(detectedConflicts.length) return;
+    root.data=serverData;
+    if(isAdmin() && Object.keys(settingsPatch).length){
+      const baseSettings=baseline.settings||{};
+      const remoteSettings=root.settings||{};
+      Object.keys(settingsPatch).forEach(field=>{
+        const baseValue=baseSettings[field];
+        const remoteValue=remoteSettings[field];
+        const localValue=settingsPatch[field]===null?undefined:settingsPatch[field];
+        if(JSON.stringify(remoteValue)!==JSON.stringify(baseValue) && JSON.stringify(remoteValue)!==JSON.stringify(localValue)){
+          detectedConflicts.push(`settings:${field}`);
+        }
+      });
+      const mergedSettings={...remoteSettings};
+      Object.entries(settingsPatch).forEach(([field,value])=>{
+        if(value===null) delete mergedSettings[field]; else mergedSettings[field]=value;
+      });
+      root.settings=mergedSettings;
     }
+    return root;
+  },undefined,false);
+  if(!tx || !tx.committed){
+    if(detectedConflicts.length) throw new Error('Ada perubahan bersamaan pada data yang sama dari perangkat lain (termasuk kemungkinan penghapusan atau pengaturan). Muat ulang data terbaru, periksa perubahan, lalu simpan kembali.');
+    throw new Error('Firebase belum mengonfirmasi penyimpanan data dan pengaturan Maktabah.');
   }
+  const privateSnapshot=tx.snapshot.val()||{};
+  const serverData=privateSnapshot.data||{};
+  const saved={};
+  saved.deletedLoanIds=maktabahRows(serverData.deletedLoanIds).map(String);
+  collections.forEach(collection=>{saved[collection]=maktabahRows(serverData[collection]);});
+  saved.settings=maktabahClone(privateSnapshot.settings||baseline.settings||{});
 
   // Rebase hasil server dengan perubahan lokal yang mungkin dibuat pengguna
-  // ketika transaksi Firebase masih berjalan. Data remote baru tidak hilang,
-  // sementara edit lokal setelah snapshot tetap menunggu antrean berikutnya.
+  // ketika transaksi Firebase masih berjalan.
   collections.forEach(collection=>{
     state[collection]=maktabahRebaseLocal(collection,payload[collection],state[collection],saved[collection]);
   });
@@ -1259,7 +1323,6 @@ async function savePrivateFirebase(){
   (saved.deletedLoanIds||[]).forEach(id=>currentDeleted.add(String(id)));
   state.deletedLoanIds=Array.from(currentDeleted);
 
-  // Baseline diperbarui hanya setelah setiap cabang di atas terkonfirmasi.
   maktabahServerBaseline={
     ...maktabahClone(baseline),
     ...maktabahClone(saved),
@@ -1269,9 +1332,9 @@ async function savePrivateFirebase(){
     kategoriList:maktabahClone(saved.kategoriList),
     rakList:maktabahClone(saved.rakList),
     kontribList:maktabahClone(saved.kontribList),
-    targetLiterasi:maktabahClone(saved.targetLiterasi)
+    targetLiterasi:maktabahClone(saved.targetLiterasi),
+    settings:maktabahClone(saved.settings)
   };
-  // Sinkronkan status khusus agar transaksi lama tidak mengembalikan status.
   saved.loans=maktabahRows(saved.loans).map(row=>{
     const key=String(row.id);
     const returned=(window.__maktabahReturnStatusMap||{})[key];
@@ -1332,21 +1395,67 @@ function enqueuePrivateSave(){
   });
   return maktabahSaveQueue;
 }
+// Semua perubahan state penting memakai helper ini: snapshot -> mutasi -> server -> UI.
+// Jika server menolak, state dikembalikan ke snapshot sebelumnya.
+async function commitMaktabahMutation(mutator, options={}){
+  if(!firebaseReady || !db || !currentUser) {
+    const error=new Error("Firebase atau sesi pengguna belum siap. Perubahan tidak disimpan.");
+    showToast(error.message,"rose");
+    throw error;
+  }
+  const before=maktabahClone({...privateDataPayload(), settings:state.settings||{}});
+  try{
+    await mutator();
+    await scheduleSave();
+    if(options.closeModal){
+      state[options.closeModal]=null;
+      renderModal();
+    }
+    if(options.render!==false) renderContent();
+    if(options.success) showToast(options.success, options.color||"plum");
+    return true;
+  }catch(error){
+    try{
+      applyPersisted(before);
+      ensureStateShape();
+      if(before.settings) state.settings={...before.settings};
+      if(options.closeModal) state[options.closeModal]=options.modalBackup||state[options.closeModal];
+      renderModal();
+      renderContent();
+    }catch(restoreError){
+      console.error("Pemulihan tampilan gagal",restoreError);
+    }
+    showToast(options.failure||("Gagal menyimpan ke Firebase: "+(error.message||"Kesalahan tidak diketahui")),"rose");
+    throw error;
+  }
+}
+
+// Satu pintu penyimpanan untuk modul yang masih memanggil scheduleSave().
+// Tidak ada cache lokal sebelum seluruh operasi Firebase selesai.
 function scheduleSave(){
   clearTimeout(saveTimer);
-  saveTimer=setTimeout(()=>{
-    saveTimer=null;
-    const payload=persistPayload();
-    try{localStorage.setItem(STORAGE_KEY,payload);}catch(e){}
-    if(firebaseReady && currentUser){
-      // Satu antrean serial mencegah dua penyimpanan dari perangkat ini saling
-      // mendahului. Snapshot server hanya diterapkan setelah commit terkonfirmasi.
-      enqueuePrivateSave().catch(e=>{
-        console.error('Gagal menyimpan ke Firebase',e);
-        showToast('Firebase gagal menyimpan. Perubahan belum terkonfirmasi; periksa koneksi dan coba lagi.','rose');
-      });
-    }
-  },350);
+  saveTimer=null;
+
+  if(!firebaseReady || !db || !currentUser){
+    const error=new Error('Firebase atau sesi pengguna belum siap. Perubahan belum disimpan.');
+    showToast(error.message,'rose');
+    return Promise.reject(error);
+  }
+
+  const operation=enqueuePrivateSave().then(()=>{
+    // Cache hanya salinan dari data yang telah dikonfirmasi server.
+    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }
+    catch(storageError){ console.warn('Cache lokal tidak dapat diperbarui',storageError); }
+    return true;
+  }).catch(error=>{
+    console.error('Gagal menyimpan perubahan ke Firebase',error);
+    showToast('Penyimpanan ke Firebase gagal. Perubahan belum terkonfirmasi; jangan anggap data sudah tersimpan. Periksa koneksi lalu coba lagi.','rose');
+    throw error;
+  });
+
+  // Tangani rejection untuk pemanggil lama yang belum menggunakan await.
+  operation.catch(()=>{});
+  return operation;
 }
 async function loadPublicData(){
   if(firebaseReady){
@@ -1395,10 +1504,24 @@ async function saveReturnStatus(id, tanggalKembali, status="dikembalikan"){
   const key=String(id);
   const ref=db.ref(`${RETURN_STATUS_PATH}/${key}`);
   const record={status, tanggalKembali};
-  await withTimeout(ref.set(record),15000,"Penyimpanan status pengembalian");
-  const verify=await withTimeout(ref.once("value"),12000,"Verifikasi pengembalian");
-  const saved=verify.val();
-  if(!saved || saved.status!==status || (tanggalKembali && saved.tanggalKembali!==tanggalKembali))
+  // Compare-and-set: jangan menimpa status yang telah diubah perangkat lain.
+  const before=(await withTimeout(ref.once("value"),12000,"Pemeriksaan status pengembalian")).val();
+  if(before && before.status===status){
+    if(before.tanggalKembali===tanggalKembali){
+      window.__maktabahReturnStatusMap={...(window.__maktabahReturnStatusMap||{}),[key]:before};
+      return before;
+    }
+    throw new Error("Transaksi ini sudah tercatat dikembalikan pada tanggal "+(before.tanggalKembali||"yang tersimpan di server")+". Sistem tidak mengubah tanggal pengembalian yang sudah tercatat.");
+  }
+  if(before)
+    throw new Error("Status transaksi sudah berubah dari perangkat lain. Muat ulang data sebelum mencoba lagi.");
+  const tx=await ref.transaction(current=>{
+    if(JSON.stringify(current??null)!==JSON.stringify(before??null)) return;
+    return record;
+  },undefined,false);
+  if(!tx || !tx.committed) throw new Error("Status pengembalian berubah dari perangkat lain. Muat ulang data dan coba lagi.");
+  const saved=tx.snapshot.val();
+  if(!saved || saved.status!==status || saved.tanggalKembali!==tanggalKembali)
     throw new Error("Firebase belum mengonfirmasi status pengembalian.");
   window.__maktabahReturnStatusMap={...(window.__maktabahReturnStatusMap||{}),[key]:saved};
   return saved;
@@ -2230,13 +2353,13 @@ function bindContentActions(){
   const lapTo = document.getElementById("lapTo"); if(lapTo) lapTo.addEventListener("change", e=>{ state.laporanTo=e.target.value; renderContent(); });
   const klSel = document.getElementById("kl_anggota"); if(klSel) klSel.addEventListener("change", e=>{ state._kartuAnggotaId=e.target.value; renderContent(); });
   const saveTargetBtn = document.getElementById("saveTargetBtn");
-  if(saveTargetBtn) saveTargetBtn.addEventListener("click", ()=>{
-    document.querySelectorAll("[data-target]").forEach(inp=>{
-      const kelas=inp.dataset.target, val=parseInt(inp.value,10)||0;
-      const existing = state.targetLiterasi.find(t=>t.kelas===kelas);
-      if(existing) existing.target=val; else state.targetLiterasi.push({kelas,target:val});
-    });
-    scheduleSave(); showToast("Target literasi disimpan","plum"); renderContent();
+  if(saveTargetBtn) saveTargetBtn.addEventListener("click", async ()=>{
+    if(!guardAdmin()) return;
+    const values=[...document.querySelectorAll("[data-target]")].map(inp=>({kelas:inp.dataset.target,target:parseInt(inp.value,10)||0}));
+    saveTargetBtn.disabled=true; const oldText=saveTargetBtn.textContent; saveTargetBtn.textContent="Menyimpan...";
+    try{await commitMaktabahMutation(()=>{values.forEach(({kelas,target})=>{const existing=state.targetLiterasi.find(t=>t.kelas===kelas);if(existing)existing.target=target;else state.targetLiterasi.push({kelas,target});});},{success:"Target literasi berhasil disimpan."});}
+    catch(e){console.error("Simpan target literasi gagal",e);}
+    finally{saveTargetBtn.disabled=false;saveTargetBtn.textContent=oldText;}
   });
   const anggotaSearchCari = document.getElementById("anggotaSearchCari");
   if(anggotaSearchCari){ anggotaSearchCari.addEventListener("input", e=>{ state.search=e.target.value; renderCariAnggotaResult(); }); renderCariAnggotaResult(); }
@@ -2472,32 +2595,44 @@ function bindAnggota(){
   renderAnggotaTable();
 }
 function openAnggotaModal(mode, data){ state.anggotaModal={mode, data:{...data}}; renderModal(); }
-function saveAnggotaFromForm(){
-  const d = {
-    id: state.anggotaModal.data.id,
-    nis: document.getElementById("ag_nis").value.trim(),
-    nama: document.getElementById("ag_nama").value.trim(),
-    kelas: document.getElementById("ag_kelas").value,
-    lp: document.getElementById("ag_lp").value,
-    alamat: document.getElementById("ag_alamat").value.trim(),
-    namaWali: document.getElementById("ag_namaWali").value.trim(),
-    noWaWali: document.getElementById("ag_noWaWali").value.trim(),
-    tglDaftar: document.getElementById("ag_tgl").value,
+async function saveAnggotaFromForm(){
+  if(!guardAdmin()) return;
+  const modal=state.anggotaModal;
+  const d={
+    id:modal.data.id||uid(),
+    nis:document.getElementById("ag_nis").value.trim(),
+    nama:document.getElementById("ag_nama").value.trim(),
+    kelas:document.getElementById("ag_kelas").value,
+    lp:document.getElementById("ag_lp").value,
+    alamat:document.getElementById("ag_alamat").value.trim(),
+    namaWali:document.getElementById("ag_namaWali").value.trim(),
+    noWaWali:document.getElementById("ag_noWaWali").value.trim(),
+    tglDaftar:document.getElementById("ag_tgl").value
   };
-  if(!d.nama){ showToast("Nama anggota tidak boleh kosong", "rose"); return; }
-  if(state.anggotaModal.mode==="add"){ state.anggota.push({...d, id:uid()}); showToast(`Anggota "${d.nama}" ditambahkan`, "plum"); }
-  else{ state.anggota = state.anggota.map(a=>a.id===d.id?d:a); showToast(`Data "${d.nama}" diperbarui`, "plum"); }
-  scheduleSave(); state.anggotaModal=null; renderModal(); renderContent();
+  if(!d.nama){showToast("Nama anggota tidak boleh kosong","rose");return;}
+  const btn=document.querySelector('[data-action="save-anggota"], #saveAnggotaBtn');
+  if(btn){btn.disabled=true;btn.textContent="Menyimpan ke server...";}
+  try{
+    await commitMaktabahMutation(()=>{
+      if(modal.mode==="add") state.anggota=[...state.anggota,d];
+      else state.anggota=state.anggota.map(a=>a.id===d.id?d:a);
+    },{closeModal:"anggotaModal",success:modal.mode==="add"?`Anggota "${d.nama}" berhasil disimpan.`:`Data "${d.nama}" berhasil diperbarui.`});
+  }catch(e){console.error("Simpan anggota gagal",e);}
+  finally{if(btn){btn.disabled=false;btn.textContent="Simpan";}}
 }
 function copyAnggota(id){
   const a = state.anggota.find(x=>x.id===id); if(!a) return;
   openAnggotaModal("add", {...a, nis:"", nama:a.nama+" (salinan)"});
 }
-function deleteAnggota(id){
+async function deleteAnggota(id){
   if(!guardAdmin()) return;
-  const a = state.anggota.find(x=>x.id===id); if(!a) return;
-  if(state.loans.some(l=>l.anggotaId===id && l.status==="dipinjam")){ showToast("Anggota masih punya pinjaman aktif", "rose"); return; }
-  if(confirm(`Hapus anggota "${a.nama}"?`)){ state.anggota=state.anggota.filter(x=>x.id!==id); scheduleSave(); renderContent(); showToast("Anggota dihapus", "rose"); }
+  const a=state.anggota.find(x=>x.id===id); if(!a) return;
+  if(state.loans.some(l=>l.anggotaId===id&&l.status==="dipinjam")){showToast("Anggota masih punya pinjaman aktif","rose");return;}
+  if(!confirm(`Hapus anggota "${a.nama}"?`)) return;
+  try{
+    await commitMaktabahMutation(()=>{state.anggota=state.anggota.filter(x=>x.id!==id);},
+      {success:`Anggota "${a.nama}" berhasil dihapus.`,color:"rose"});
+  }catch(e){console.error("Hapus anggota gagal",e);}
 }
 
 /* ============ MASTER: KATEGORI (page wrapper around shared body) ============ */
@@ -2526,37 +2661,50 @@ function kategoriBodyHTML(){
   `;
 }
 function bindKategoriBody(afterChange){
-  document.getElementById("addKatBtn").addEventListener("click", ()=>{ addKategoriFromForm(); afterChange(); });
+  document.getElementById("addKatBtn").addEventListener("click", async()=>{ await addKategoriFromForm(); afterChange(); });
   document.querySelectorAll("[data-kat-color]").forEach(inp=>inp.addEventListener("change", e=>{ updateKategoriField(inp.dataset.katColor,"color",e.target.value); }));
-  document.querySelectorAll("[data-kat-kode]").forEach(inp=>inp.addEventListener("change", e=>{ updateKategoriField(inp.dataset.katKode,"kode",e.target.value); afterChange(); }));
+  document.querySelectorAll("[data-kat-kode]").forEach(inp=>inp.addEventListener("change", async e=>{ await updateKategoriField(inp.dataset.katKode,"kode",e.target.value); afterChange(); }));
   document.querySelectorAll("[data-kat-nama]").forEach(inp=>inp.addEventListener("change", e=>{ updateKategoriField(inp.dataset.katNama,"nama",e.target.value); }));
-  document.querySelectorAll("[data-kat-del]").forEach(b=>b.addEventListener("click", ()=>{ deleteKategoriRow(b.dataset.katDel); afterChange(); }));
+  document.querySelectorAll("[data-kat-del]").forEach(b=>b.addEventListener("click", async()=>{ await deleteKategoriRow(b.dataset.katDel); afterChange(); }));
 }
 function bindKategoriPage(){ bindKategoriBody(()=>{ renderContent(); }); }
-function addKategoriFromForm(){
+async function addKategoriFromForm(){
+  if(!guardAdmin()) return;
   const kode=(document.getElementById("nk_kode").value||"").trim().toUpperCase();
   const nama=(document.getElementById("nk_nama").value||"").trim();
   if(!kode||!nama) return;
-  if(state.kategoriList.some(k=>k.kode===kode)){ showToast(`Kode kategori "${kode}" sudah ada`,"rose"); return; }
-  state.kategoriList.push({kode,nama,color:KAT_PALETTE[state.kategoriList.length % KAT_PALETTE.length]});
-  scheduleSave();
+  if(state.kategoriList.some(k=>k.kode===kode)){showToast(`Kode kategori "${kode}" sudah ada`,"rose");return;}
+  try{
+    await commitMaktabahMutation(()=>{state.kategoriList=[...state.kategoriList,{kode,nama,color:KAT_PALETTE[state.kategoriList.length%KAT_PALETTE.length]}];},
+      {success:`Kategori "${nama}" berhasil ditambahkan.`});
+  }catch(e){console.error("Tambah kategori gagal",e);}
 }
-function updateKategoriField(oldKode, field, value){
+async function updateKategoriField(oldKode,field,value){
+  if(!guardAdmin()) return;
+  const before=state.kategoriList.find(k=>k.kode===oldKode); if(!before) return;
   if(field==="kode"){
     const nk=value.trim().toUpperCase(); if(!nk) return;
-    if(state.kategoriList.some(k=>k.kode===nk && k.kode!==oldKode)){ showToast(`Kode "${nk}" sudah dipakai`,"rose"); return; }
-    state.kategoriList = state.kategoriList.map(k=>k.kode===oldKode?{...k,kode:nk}:k);
-    state.books = state.books.map(b=>b.kategori===oldKode?{...b,kategori:nk}:b);
-    if(state.katFilter===oldKode) state.katFilter=nk;
-  }else{
-    state.kategoriList = state.kategoriList.map(k=>k.kode===oldKode?{...k,[field]:value}:k);
+    if(state.kategoriList.some(k=>k.kode===nk&&k.kode!==oldKode)){showToast(`Kode "${nk}" sudah dipakai`,"rose");return;}
   }
-  scheduleSave();
+  try{
+    await commitMaktabahMutation(()=>{
+      if(field==="kode"){
+        const nk=value.trim().toUpperCase();
+        state.kategoriList=state.kategoriList.map(k=>k.kode===oldKode?{...k,kode:nk}:k);
+        state.books=state.books.map(b=>b.kategori===oldKode?{...b,kategori:nk}:b);
+        if(state.katFilter===oldKode) state.katFilter=nk;
+      }else state.kategoriList=state.kategoriList.map(k=>k.kode===oldKode?{...k,[field]:value}:k);
+    },{success:"Kategori berhasil diperbarui."});
+  }catch(e){console.error("Edit kategori gagal",e);}
 }
-function deleteKategoriRow(kode){
+async function deleteKategoriRow(kode){
   if(!guardAdmin()) return;
-  if(state.books.some(b=>b.kategori===kode)){ showToast("Pindahkan dulu buku dari kategori ini", "rose"); return; }
-  if(confirm(`Hapus kategori "${kode}"?`)){ state.kategoriList=state.kategoriList.filter(k=>k.kode!==kode); if(state.katFilter===kode) state.katFilter="Semua"; scheduleSave(); }
+  if(state.books.some(b=>b.kategori===kode)){showToast("Pindahkan dulu buku dari kategori ini","rose");return;}
+  if(!confirm(`Hapus kategori "${kode}"?`)) return;
+  try{
+    await commitMaktabahMutation(()=>{state.kategoriList=state.kategoriList.filter(k=>k.kode!==kode);if(state.katFilter===kode)state.katFilter="Semua";},
+      {success:`Kategori "${kode}" berhasil dihapus.`,color:"rose"});
+  }catch(e){console.error("Hapus kategori gagal",e);}
 }
 
 /* ============ MASTER: PENGARANG/PENERBIT ============ */
@@ -2574,19 +2722,25 @@ function kontribHTML(){
 function bindKontrib(){
   document.getElementById("btnTambahKontrib").addEventListener("click", ()=>openKontribModal("add",{jenis:"Pengarang",nama:""}));
   document.querySelectorAll("[data-editkontrib]").forEach(b=>b.addEventListener("click", ()=>openKontribModal("edit", state.kontribList.find(k=>k.id===b.dataset.editkontrib))));
-  document.querySelectorAll("[data-delkontrib]").forEach(b=>b.addEventListener("click", ()=>{
+  document.querySelectorAll("[data-delkontrib]").forEach(b=>b.addEventListener("click", async ()=>{
     if(!guardAdmin()) return;
-    if(confirm("Hapus data ini?")){ state.kontribList=state.kontribList.filter(k=>k.id!==b.dataset.delkontrib); scheduleSave(); renderContent(); }
+    if(!confirm("Hapus data ini?")) return;
+    try{await commitMaktabahMutation(()=>{state.kontribList=state.kontribList.filter(k=>k.id!==b.dataset.delkontrib);},{success:"Data kontributor berhasil dihapus."});}
+    catch(e){console.error("Hapus kontributor gagal",e);}
   }));
 }
 function openKontribModal(mode,data){ state.kontribModal={mode,data:{...data}}; renderModal(); }
-function saveKontribFromForm(){
-  const d={ id:state.kontribModal.data.id, jenis:document.getElementById("kt_jenis").value, nama:document.getElementById("kt_nama").value.trim() };
-  if(!d.nama){ showToast("Nama tidak boleh kosong","rose"); return; }
-  if(state.kontribModal.mode==="add") state.kontribList.push({...d,id:uid()});
-  else state.kontribList = state.kontribList.map(k=>k.id===d.id?d:k);
-  scheduleSave(); state.kontribModal=null; renderModal(); renderContent();
-  showToast("Tersimpan", "plum");
+async function saveKontribFromForm(){
+  if(!guardAdmin()) return;
+  const modal=state.kontribModal;
+  const d={id:modal.data.id||uid(),jenis:document.getElementById("kt_jenis").value,nama:document.getElementById("kt_nama").value.trim()};
+  if(!d.nama){showToast("Nama tidak boleh kosong","rose");return;}
+  try{
+    await commitMaktabahMutation(()=>{
+      if(modal.mode==="add") state.kontribList=[...state.kontribList,d];
+      else state.kontribList=state.kontribList.map(k=>k.id===d.id?d:k);
+    },{closeModal:"kontribModal",success:"Data pengarang/penerbit berhasil disimpan."});
+  }catch(e){console.error("Simpan kontribusi gagal",e);}
 }
 
 /* ============ MASTER: RAK/LOKASI ============ */
@@ -2602,22 +2756,28 @@ function rakHTML(){
 function bindRak(){
   document.getElementById("btnTambahRak").addEventListener("click", ()=>openRakModal("add",{kode:"",nama:""}));
   document.querySelectorAll("[data-editrak]").forEach(b=>b.addEventListener("click", ()=>openRakModal("edit", state.rakList.find(r=>r.id===b.dataset.editrak))));
-  document.querySelectorAll("[data-delrak]").forEach(b=>b.addEventListener("click", ()=>{
+  document.querySelectorAll("[data-delrak]").forEach(b=>b.addEventListener("click", async ()=>{
     if(!guardAdmin()) return;
-    const r = state.rakList.find(x=>x.id===b.dataset.delrak);
-    if(state.books.some(bk=>bk.rak===r.kode)){ showToast("Masih ada buku di rak ini", "rose"); return; }
-    if(confirm(`Hapus rak "${r.nama}"?`)){ state.rakList=state.rakList.filter(x=>x.id!==r.id); scheduleSave(); renderContent(); }
+    const r=state.rakList.find(x=>x.id===b.dataset.delrak); if(!r) return;
+    if(state.books.some(bk=>bk.rak===r.kode)){showToast("Masih ada buku di rak ini","rose");return;}
+    if(!confirm(`Hapus rak "${r.nama}"?`)) return;
+    try{await commitMaktabahMutation(()=>{state.rakList=state.rakList.filter(x=>x.id!==r.id);},{success:"Rak berhasil dihapus."});}
+    catch(e){console.error("Hapus rak gagal",e);}
   }));
 }
 function openRakModal(mode,data){ state.rakModal={mode,data:{...data}}; renderModal(); }
-function saveRakFromForm(){
-  const d={ id:state.rakModal.data.id, kode:document.getElementById("rk_kode").value.trim().toUpperCase(), nama:document.getElementById("rk_nama").value.trim() };
-  if(!d.kode||!d.nama){ showToast("Kode dan nama rak wajib diisi","rose"); return; }
-  if(state.rakList.some(r=>r.kode===d.kode && r.id!==d.id)){ showToast(`Kode rak "${d.kode}" sudah dipakai`,"rose"); return; }
-  if(state.rakModal.mode==="add") state.rakList.push({...d,id:uid()});
-  else state.rakList = state.rakList.map(r=>r.id===d.id?d:r);
-  scheduleSave(); state.rakModal=null; renderModal(); renderContent();
-  showToast("Tersimpan","plum");
+async function saveRakFromForm(){
+  if(!guardAdmin()) return;
+  const modal=state.rakModal;
+  const d={id:modal.data.id||uid(),kode:document.getElementById("rk_kode").value.trim().toUpperCase(),nama:document.getElementById("rk_nama").value.trim()};
+  if(!d.kode||!d.nama){showToast("Kode dan nama rak wajib diisi","rose");return;}
+  if(state.rakList.some(r=>r.kode===d.kode&&r.id!==d.id)){showToast(`Kode rak "${d.kode}" sudah dipakai`,"rose");return;}
+  try{
+    await commitMaktabahMutation(()=>{
+      if(modal.mode==="add") state.rakList=[...state.rakList,d];
+      else state.rakList=state.rakList.map(r=>r.id===d.id?d:r);
+    },{closeModal:"rakModal",success:"Data rak berhasil disimpan."});
+  }catch(e){console.error("Simpan rak gagal",e);}
 }
 
 /* ============ KATALOG / DATA BUKU ============ */
@@ -2719,11 +2879,15 @@ function copyBook(id){
   state.bookModal={mode:"add", data:{...b, id:undefined, kode, judul:b.judul+" (Salinan)"}};
   renderModal();
 }
-function deleteBook(id){
+async function deleteBook(id){
   if(!guardAdmin()) return;
   const b=state.books.find(x=>x.id===id); if(!b) return;
-  if(isDipinjam(b.kode)){ showToast("Tidak bisa dihapus — buku sedang dipinjam","rose"); return; }
-  if(confirm(`Hapus "${b.judul}" (${b.kode})?`)){ state.books=state.books.filter(x=>x.id!==id); scheduleSave(); showToast("Buku dihapus","rose"); renderContent(); }
+  if(isDipinjam(b.kode)){showToast("Tidak bisa dihapus — buku sedang dipinjam","rose");return;}
+  if(!confirm(`Hapus "${b.judul}" (${b.kode})?`)) return;
+  try{
+    await commitMaktabahMutation(()=>{state.books=state.books.filter(x=>x.id!==id);},
+      {success:`Buku "${b.judul}" berhasil dihapus.`,color:"rose"});
+  }catch(e){console.error("Hapus buku gagal",e);}
 }
 
 function updateBookSelectionButtons(){
@@ -2756,38 +2920,34 @@ function toggleSelectAllBooks(){
   renderKatalogGrid();
 }
 
-function deleteSelectedBooks(){
+async function deleteSelectedBooks(){
   if(!guardAdmin()) return;
   const ids=[...(state.bookSelected||[])];
-  if(!ids.length){ showToast("Pilih buku yang ingin dihapus terlebih dahulu","rose"); return; }
+  if(!ids.length){showToast("Pilih buku yang ingin dihapus terlebih dahulu","rose");return;}
   const selected=state.books.filter(b=>ids.includes(b.id));
   const blocked=selected.filter(b=>isDipinjam(b.kode));
   const removable=selected.filter(b=>!isDipinjam(b.kode));
-  if(!removable.length){ showToast("Semua buku yang dipilih sedang dipinjam","rose"); return; }
-  const msg=blocked.length ? `${removable.length} buku akan dihapus. ${blocked.length} buku yang sedang dipinjam tidak akan dihapus. Lanjutkan?` : `Hapus ${removable.length} buku yang dipilih?`;
+  if(!removable.length){showToast("Semua buku yang dipilih sedang dipinjam","rose");return;}
+  const msg=blocked.length?`${removable.length} buku akan dihapus. ${blocked.length} buku yang sedang dipinjam tidak akan dihapus. Lanjutkan?`:`Hapus ${removable.length} buku yang dipilih?`;
   if(!confirm(msg)) return;
   const removeIds=new Set(removable.map(b=>b.id));
-  state.books=state.books.filter(b=>!removeIds.has(b.id));
-  state.bookSelected=[];
-  scheduleSave(); renderContent(); showToast(`${removable.length} buku berhasil dihapus`,"rose");
+  try{await commitMaktabahMutation(()=>{state.books=state.books.filter(b=>!removeIds.has(b.id));state.bookSelected=[];},{success:`${removable.length} buku berhasil dihapus.`});}
+  catch(e){console.error("Penghapusan buku gagal",e);}
 }
 
-function deleteBooksByCategory(){
+async function deleteBooksByCategory(){
   if(!guardAdmin()) return;
-  if(state.katFilter==="Semua"){ showToast("Pilih kategori terlebih dahulu pada filter Kategori","rose"); return; }
-  const kat=katByKode(state.katFilter);
-  const books=state.books.filter(b=>b.kategori===state.katFilter);
-  if(!books.length){ showToast("Tidak ada buku pada kategori ini","rose"); return; }
-  const blocked=books.filter(b=>isDipinjam(b.kode));
-  const removable=books.filter(b=>!isDipinjam(b.kode));
-  if(!removable.length){ showToast("Semua buku pada kategori ini sedang dipinjam","rose"); return; }
+  if(state.katFilter==="Semua"){showToast("Pilih kategori terlebih dahulu pada filter Kategori","rose");return;}
+  const kat=katByKode(state.katFilter), books=state.books.filter(b=>b.kategori===state.katFilter);
+  if(!books.length){showToast("Tidak ada buku pada kategori ini","rose");return;}
+  const blocked=books.filter(b=>isDipinjam(b.kode)), removable=books.filter(b=>!isDipinjam(b.kode));
+  if(!removable.length){showToast("Semua buku pada kategori ini sedang dipinjam","rose");return;}
   const name=kat?.nama||state.katFilter;
-  const msg=blocked.length ? `Hapus semua buku kategori "${name}"? ${removable.length} akan dihapus dan ${blocked.length} buku yang sedang dipinjam akan dipertahankan.` : `Hapus semua ${removable.length} buku dalam kategori "${name}"?`;
+  const msg=blocked.length?`Hapus semua buku kategori "${name}"? ${removable.length} akan dihapus dan ${blocked.length} buku yang sedang dipinjam akan dipertahankan.`:`Hapus semua ${removable.length} buku dalam kategori "${name}"?`;
   if(!confirm(msg)) return;
   const removeIds=new Set(removable.map(b=>b.id));
-  state.books=state.books.filter(b=>!removeIds.has(b.id));
-  state.bookSelected=state.bookSelected.filter(id=>!removeIds.has(id));
-  scheduleSave(); renderContent(); showToast(`${removable.length} buku dari kategori "${name}" berhasil dihapus`,"rose");
+  try{await commitMaktabahMutation(()=>{state.books=state.books.filter(b=>!removeIds.has(b.id));state.bookSelected=state.bookSelected.filter(id=>!removeIds.has(id));},{success:`${removable.length} buku dari kategori "${name}" berhasil dihapus.`});}
+  catch(e){console.error("Penghapusan kategori gagal",e);}
 }
 async function uploadBookCover(file, bookId){
   if(!file) return null;
@@ -2933,6 +3093,7 @@ async function optimizeAllBookCovers(){
   const btn=document.getElementById("btnOptimizeAllCovers");
   if(btn){btn.disabled=true;btn.textContent="Mengoptimalkan cover...";}
   let done=0, optimized=0, skipped=0, failed=0;
+  const updatedCovers=new Map();
   try{
     for(const book of candidates){
       done++;
@@ -2941,20 +3102,20 @@ async function optimizeAllBookCovers(){
         const response=await fetch(book.coverUrl,{cache:"no-store"});
         if(!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob=await response.blob();
-        if(blob.size<=70*1024){ skipped++; continue; }
+        if(blob.size<=70*1024){skipped++;continue;}
         const file=new File([blob],`${book.id}.jpg`,{type:blob.type.startsWith("image/")?blob.type:"image/jpeg",lastModified:Date.now()});
         const newUrl=await uploadBookCover(file,book.id);
-        state.books=state.books.map(b=>b.id===book.id?{...b,coverUrl:newUrl}:b);
-        optimized++;
-      }catch(err){
-        failed++;
-        console.warn("Gagal mengoptimalkan cover",book.id,err);
-      }
+        updatedCovers.set(book.id,newUrl); optimized++;
+      }catch(err){failed++;console.warn("Gagal mengoptimalkan cover",book.id,err);}
     }
-    scheduleSave();
-    await new Promise(r=>setTimeout(r,400));
-    showToast(`Optimasi selesai: ${optimized} dikompres, ${skipped} sudah ≤70 KB, ${failed} gagal.`,failed?"rose":"plum");
+    if(updatedCovers.size){
+      await commitMaktabahMutation(()=>{state.books=state.books.map(b=>updatedCovers.has(b.id)?{...b,coverUrl:updatedCovers.get(b.id)}:b);},{success:`Optimasi tersimpan: ${optimized} cover diperbarui.`});
+    }
+    showToast(`Optimasi selesai: ${optimized} dikompres${updatedCovers.size?" dan tersimpan di server":""}, ${skipped} sudah ≤70 KB, ${failed} gagal.`,failed?"rose":"plum");
     renderContent();
+  }catch(err){
+    console.error("Gagal menyimpan hasil optimasi cover",err);
+    showToast("Cover telah diproses, tetapi perubahan alamat cover belum terkonfirmasi tersimpan di server. Jangan tutup halaman sebelum mencoba ulang.","rose");
   }finally{
     const b=document.getElementById("btnOptimizeAllCovers");
     if(b){b.disabled=false;b.innerHTML=`${icon("upload",15)} Optimalkan Semua Cover (≤70 KB)`;}
@@ -2971,47 +3132,113 @@ function previewBookCover(file){
 
 async function saveBookFromForm(){
   const m=state.bookModal;
-  const data={
-    ...m.data,
-    kategori: document.getElementById("f_kategori").value,
-    kode: document.getElementById("f_kode").value.trim().toUpperCase(),
-    judul: document.getElementById("f_judul").value.trim(),
-    penyusun: document.getElementById("f_penyusun").value.trim(),
-    penerbit: document.getElementById("f_penerbit").value.trim(),
-    tahunTerbit: document.getElementById("f_tahun").value.trim(),
-    sumber: m.data.sumber,
-    tanggalDiterima: document.getElementById("f_tanggal").value,
-    keterangan: document.getElementById("f_ket").value.trim(),
-    rak: document.getElementById("f_rak").value,
-    statusFisik: m.data.statusFisik || "baik",
-  };
-  const coverInput=document.getElementById("f_cover");
-  const coverFile=coverInput?.files?.[0]||null;
-  if(coverFile){
-    try{
-      const targetId=data.id||uid();
-      const btn=document.getElementById("saveBookBtn");
-      if(btn){btn.disabled=true; btn.textContent="Mengunggah cover...";}
-      data.coverUrl=await uploadBookCover(coverFile,targetId);
-      if(!data.id) data.id=targetId;
-    }catch(err){
-      showToast(err.message||"Cover gagal diunggah","rose");
-      const btn=document.getElementById("saveBookBtn");
-      if(btn){btn.disabled=false; btn.textContent=m.mode==='add'?'Simpan ke Katalog':'Simpan Perubahan';}
-      return;
+  if(!m || window.__maktabahBookSaveInProgress) return;
+  if(!guardAdmin()) return;
+
+  const btn=document.getElementById("saveBookBtn");
+  const originalButtonText=m.mode==='add'?'Simpan ke Katalog':'Simpan Perubahan';
+  const oldBooks=maktabahClone(state.books);
+  const oldLoans=maktabahClone(state.loans);
+  let committed=false;
+  const setSaving=(saving,label)=>{
+    if(btn){
+      btn.disabled=!!saving;
+      btn.textContent=saving?(label||'Menyimpan ke server...'):originalButtonText;
     }
+  };
+
+  window.__maktabahBookSaveInProgress=true;
+  try{
+    if(!firebaseReady || !db || !currentUser){
+      throw new Error('Firebase atau sesi login belum siap. Buku tidak disimpan secara lokal saja.');
+    }
+
+    const data={
+      ...m.data,
+      id:m.data.id||uid(),
+      kategori:document.getElementById("f_kategori").value,
+      kode:document.getElementById("f_kode").value.trim().toUpperCase(),
+      judul:document.getElementById("f_judul").value.trim(),
+      penyusun:document.getElementById("f_penyusun").value.trim(),
+      penerbit:document.getElementById("f_penerbit").value.trim(),
+      tahunTerbit:document.getElementById("f_tahun").value.trim(),
+      sumber:m.data.sumber,
+      tanggalDiterima:document.getElementById("f_tanggal").value,
+      keterangan:document.getElementById("f_ket").value.trim(),
+      rak:document.getElementById("f_rak").value,
+      statusFisik:m.data.statusFisik||'baik'
+    };
+
+    if(!data.judul) throw new Error('Judul buku tidak boleh kosong.');
+    if(!data.kode) throw new Error('Kode buku tidak boleh kosong.');
+    if(state.books.some(b=>b.kode===data.kode && b.id!==data.id)){
+      throw new Error(`Kode ${data.kode} sudah dipakai buku lain.`);
+    }
+
+    const coverFile=document.getElementById("f_cover")?.files?.[0]||null;
+    if(coverFile){
+      setSaving(true,'Mengunggah cover...');
+      data.coverUrl=await uploadBookCover(coverFile,data.id);
+    }
+
+    // Ubah state di memori untuk membentuk payload yang akan dikirim.
+    // Belum render, belum menulis localStorage, dan belum mengizinkan cetak.
+    if(m.mode==='add'){
+      state.books=[...state.books,data];
+    }else{
+      const old=state.books.find(b=>b.id===data.id);
+      if(!old) throw new Error('Data buku yang akan diedit tidak ditemukan.');
+      const oldKode=old.kode;
+      state.books=state.books.map(b=>b.id===data.id?data:b);
+      if(oldKode!==data.kode){
+        state.loans=state.loans.map(l=>l.kodeBuku===oldKode?{...l,kodeBuku:data.kode}:l);
+      }
+    }
+
+    setSaving(true,'Menyimpan ke server...');
+    // enqueuePrivateSave menyelesaikan antrean secara serial dan menolak bila
+    // transaksi Firebase tidak mendapat konfirmasi commit.
+    await enqueuePrivateSave();
+
+    // Baca ulang koleksi buku dari server sebagai verifikasi tambahan.
+    const verifySnap=await withTimeout(
+      db.ref(`${DATA_PATH}/books`).once('value'),
+      15000,
+      'Verifikasi buku di server'
+    );
+    const serverBooks=maktabahRows(verifySnap.val());
+    const serverBook=serverBooks.find(b=>b && String(b.id)===String(data.id));
+    if(!serverBook || String(serverBook.kode||'').toUpperCase()!==data.kode){
+      throw new Error('Firebase belum mengembalikan data buku yang sama. Buku belum dinyatakan berhasil tersimpan.');
+    }
+
+    // Gunakan data hasil baca ulang server, lalu baru perbarui cache lokal/UI.
+    state.books=maktabahRows(verifySnap.val());
+    try{localStorage.setItem(STORAGE_KEY,persistPayload());}
+    catch(storageError){
+      console.warn('Data sudah tersimpan di Firebase, tetapi cache lokal gagal diperbarui.',storageError);
+    }
+    committed=true;
+    state.bookModal=null;
+    renderModal();
+    renderContent();
+    showToast(`Buku "${data.judul}" (${data.kode}) terkonfirmasi tersimpan di server.`,'plum');
+
+  }catch(err){
+    console.error('Gagal menyimpan buku ke Firebase:',err);
+    if(!committed){
+      // Rollback tampilan lokal. Jika transaksi parsial sempat commit di server,
+      // hasil server tetap harus diperiksa saat reload; jangan klaim data terhapus.
+      state.books=oldBooks;
+      state.loans=oldLoans;
+    }
+    const message=err?.message||'Terjadi kesalahan yang tidak diketahui.';
+    alert('BUKU BELUM DAPAT DIKONFIRMASI TERSIMPAN DI SERVER.\n\n'+message+'\n\nPeriksa koneksi dan data Firebase sebelum mencoba kembali.');
+    renderContent();
+  }finally{
+    window.__maktabahBookSaveInProgress=false;
+    setSaving(false);
   }
-  if(!data.judul){ showToast("Judul buku tidak boleh kosong","rose"); return; }
-  if(!data.kode){ showToast("Kode buku tidak boleh kosong","rose"); return; }
-  if(state.books.some(b=>b.kode===data.kode && b.id!==data.id)){ showToast(`Kode ${data.kode} sudah dipakai buku lain`,"rose"); return; }
-  if(m.mode==="add"){ state.books.push({...data, id:data.id||uid()}); showToast(`Buku "${data.judul}" (${data.kode}) ditambahkan`,"plum"); }
-  else{
-    const old=state.books.find(b=>b.id===data.id); const oldKode=old.kode;
-    state.books=state.books.map(b=>b.id===data.id?data:b);
-    if(oldKode!==data.kode) state.loans=state.loans.map(l=>l.kodeBuku===oldKode?{...l,kodeBuku:data.kode}:l);
-    showToast(`Data buku "${data.judul}" diperbarui`,"plum");
-  }
-  scheduleSave(); state.bookModal=null; renderModal(); renderContent();
 }
 
 /* ============ TRANSAKSI: PEMINJAMAN ============ */
@@ -3038,24 +3265,34 @@ function peminjamanHTML(){
 }
 async function saveNewLoanToFirebase(loan){
   if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap. Peminjaman belum tersimpan.");
-  const loansRef=db.ref(`${DATA_PATH}/loans`);
-  const result=await withTimeout(loansRef.transaction(current=>{
-    let rows;
-    if(Array.isArray(current)) rows=current.slice();
-    else if(current && typeof current==="object") rows=Object.keys(current).sort((a,b)=>Number(a)-Number(b)).map(k=>current[k]).filter(Boolean);
-    else rows=[];
-    if(rows.some(row=>row && String(row.id)===String(loan.id))) return rows;
-    // Cegah dua perangkat mencatat buku yang sama sebagai pinjaman aktif.
-    if(rows.some(row=>row && String(row.kodeBuku)===String(loan.kodeBuku) && row.status==="dipinjam")) return;
-    rows.unshift(loan);
-    return rows;
-  },undefined,false),20000,"Penyimpanan peminjaman");
-  if(!result || !result.committed) throw new Error("Peminjaman tidak tersimpan. Buku mungkin sudah dipinjam dari perangkat lain.");
-  const saved=result.snapshot.val();
-  const rows=Array.isArray(saved)?saved:(saved && typeof saved==="object"?Object.keys(saved).sort((a,b)=>Number(a)-Number(b)).map(k=>saved[k]).filter(Boolean):[]);
+  // Transaksi pada parent data membuat validasi buku, anggota, dan pinjaman
+  // berlangsung atomik. Ini mencegah dua perangkat meminjam buku yang sama
+  // atau meminjamkan buku/anggota yang sudah tidak ada.
+  const dataRef=db.ref(DATA_PATH);
+  const result=await dataRef.transaction(current=>{
+    const root={...(current||{})};
+    const books=maktabahRows(root.books);
+    const members=maktabahRows(root.anggota);
+    const loans=maktabahRows(root.loans);
+    const deleted=new Set(maktabahRows(root.deletedLoanIds).map(row=>String(typeof row==='object'?row.id:row)));
+    if(deleted.has(String(loan.id))) return;
+    if(loans.some(row=>row && String(row.id)===String(loan.id))) return;
+    const book=books.find(row=>row && String(row.kode||'').toUpperCase()===String(loan.kodeBuku||'').toUpperCase());
+    if(!book || book.statusFisik!=="baik") return;
+    if(!members.some(row=>row && String(row.id)===String(loan.anggotaId))) return;
+    if(loans.some(row=>row && String(row.kodeBuku||'').toUpperCase()===String(loan.kodeBuku||'').toUpperCase() && row.status==="dipinjam")) return;
+    loans.unshift(loan);
+    root.loans=loans;
+    return root;
+  },undefined,false);
+  if(!result || !result.committed) throw new Error("Peminjaman tidak tersimpan. Buku mungkin sudah dipinjam, buku/anggota tidak lagi tersedia, atau data berubah dari perangkat lain.");
+  const saved=result.snapshot.val()||{};
+  const rows=maktabahRows(saved.loans);
   const confirmed=rows.find(row=>row && String(row.id)===String(loan.id));
-  if(!confirmed || confirmed.status!=="dipinjam" || String(confirmed.kodeBuku)!==String(loan.kodeBuku)) throw new Error("Firebase belum mengonfirmasi data peminjaman.");
+  if(!confirmed || confirmed.status!=="dipinjam" || String(confirmed.kodeBuku)!==String(loan.kodeBuku))
+    throw new Error("Firebase belum mengonfirmasi data peminjaman.");
   state.loans=rows;
+  if(maktabahServerBaseline) maktabahServerBaseline.loans=maktabahClone(rows);
   try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
   return confirmed;
 }
@@ -3136,17 +3373,19 @@ function bindHistoryModal(){
   document.getElementById("historyBackdrop")?.addEventListener("click",e=>{if(e.target.id==="historyBackdrop"){state.historyModal=null;renderModal();}});
   document.getElementById("closeHistoryModal")?.addEventListener("click",()=>{state.historyModal=null;renderModal();});
 }
-function deleteHistoryLoan(id){
+async function deleteHistoryLoan(id){
   if(!guardAdmin()) return;
   const loan=state.loans.find(l=>String(l.id)===String(id));
   if(!loan){ showToast("Data riwayat sudah tidak ditemukan.","rose"); return; }
   if(!confirm(`Hapus riwayat peminjaman "${loan.judulBuku}" oleh ${loan.nama}? Data akan dihapus dari riwayat buku dan riwayat anggota.`)) return;
-  state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),String(id)]));
-  state.loans=state.loans.filter(l=>String(l.id)!==String(id));
-  state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>String(l.id)!==String(id));
-  scheduleSave();
-  showToast("Riwayat peminjaman berhasil dihapus.","rose");
-  if(state.historyModal){ renderModal(); } else { renderContent(); }
+  try{
+    await commitMaktabahMutation(()=>{
+      state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),String(id)]));
+      state.loans=state.loans.filter(l=>String(l.id)!==String(id));
+      state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>String(l.id)!==String(id));
+    },{success:"Riwayat peminjaman berhasil dihapus."});
+    if(state.historyModal) renderModal(); else renderContent();
+  }catch(e){console.error("Penghapusan riwayat gagal",e);}
 }
 
 function loanListHTML(list, showLunas){
@@ -3188,6 +3427,7 @@ function pengembalianHTML(){
 async function returnLoan(id){
   if(window.__maktabahReturnSaving) return;
   const l=state.loans.find(x=>String(x.id)===String(id)); if(!l) return;
+  if(l.status!=="dipinjam") { showToast("Transaksi ini bukan peminjaman aktif. Muat ulang data terbaru.","rose"); return; }
   const returnedAt=iso(todayDate);
   window.__maktabahReturnSaving=true;
   clearTimeout(saveTimer); saveTimer=null;
@@ -3219,10 +3459,14 @@ function perpanjanganHTML(){
       </div>`).join("")}
   `;
 }
-function extendLoan(id){
+async function extendLoan(id){
+  if(!guardAdmin()) return;
   const l=state.loans.find(x=>x.id===id); if(!l) return;
-  state.loans = state.loans.map(x=>x.id===id?{...x, tanggalJatuhTempo:iso(addDays(new Date(x.tanggalJatuhTempo), state.settings.lamaPinjamHari)), perpanjang:(x.perpanjang||0)+1}:x);
-  scheduleSave(); showToast(`Jatuh tempo "${l.judulBuku}" diperpanjang`,"plum"); renderContent();
+  try{
+    await commitMaktabahMutation(()=>{
+      state.loans=state.loans.map(x=>x.id===id?{...x,tanggalJatuhTempo:iso(addDays(new Date(x.tanggalJatuhTempo),state.settings.lamaPinjamHari)),perpanjang:(x.perpanjang||0)+1}:x);
+    },{success:`Jatuh tempo "${l.judulBuku}" berhasil diperpanjang.`});
+  }catch(e){console.error("Perpanjangan gagal",e);}
 }
 
 /* ============ TRANSAKSI: HILANG/RUSAK ============ */
@@ -3244,25 +3488,28 @@ function hilangRusakHTML(){
     </tbody></table></div>`}
   `;
 }
-function markLoanLostDamaged(loanId, kind){
+async function markLoanLostDamaged(loanId, kind){
   if(!guardAdmin()) return;
   const l=state.loans.find(x=>x.id===loanId); if(!l) return;
   if(!confirm(`Tandai "${l.judulBuku}" sebagai ${kind==='hilang'?'HILANG':'RUSAK'}? Peminjaman ini akan ditutup.`)) return;
-  state.loans = state.loans.map(x=>x.id===loanId?{...x, status:kind, tanggalKembali:iso(todayDate)}:x);
-  state.books = state.books.map(b=>b.kode===l.kodeBuku?{...b, statusFisik:kind}:b);
-  scheduleSave(); showToast(`"${l.judulBuku}" ditandai ${kind}`,"rose"); renderContent();
+  try{
+    await commitMaktabahMutation(()=>{
+      state.loans=state.loans.map(x=>x.id===loanId?{...x,status:kind,tanggalKembali:iso(todayDate)}:x);
+      state.books=state.books.map(b=>b.kode===l.kodeBuku?{...b,statusFisik:kind}:b);
+    },{success:`"${l.judulBuku}" ditandai ${kind}.`});
+  }catch(e){console.error("Perubahan status hilang/rusak gagal",e);}
 }
-function markBookLostDamaged(bookId, kind){
+async function markBookLostDamaged(bookId, kind){
   if(!guardAdmin()) return;
   const b=state.books.find(x=>x.id===bookId); if(!b) return;
   if(!confirm(`Tandai "${b.judul}" sebagai ${kind==='hilang'?'HILANG':'RUSAK'}?`)) return;
-  state.books = state.books.map(x=>x.id===bookId?{...x, statusFisik:kind}:x);
-  scheduleSave(); showToast(`"${b.judul}" ditandai ${kind}`,"rose"); renderContent();
+  try{ await commitMaktabahMutation(()=>{state.books=state.books.map(x=>x.id===bookId?{...x,statusFisik:kind}:x);},{success:`"${b.judul}" ditandai ${kind}.`}); }
+  catch(e){console.error("Perubahan status buku gagal",e);}
 }
-function restoreBook(bookId){
+async function restoreBook(bookId){
   if(!guardAdmin()) return;
-  state.books = state.books.map(x=>x.id===bookId?{...x, statusFisik:"baik"}:x);
-  scheduleSave(); showToast("Status buku dipulihkan","plum"); renderContent();
+  try{ await commitMaktabahMutation(()=>{state.books=state.books.map(x=>x.id===bookId?{...x,statusFisik:"baik"}:x);},{success:"Status buku dipulihkan."}); }
+  catch(e){console.error("Pemulihan status buku gagal",e);}
 }
 
 /* ============ TRANSAKSI: DENDA ============ */
@@ -3280,36 +3527,25 @@ function dendaHTML(){
 }
 async function toggleLunas(id){
   if(!guardAdmin()) return;
-  if(!firebaseReady || !db || !currentUser){
-    showToast("Tidak dapat menandai lunas: koneksi atau sesi Admin belum siap. Silakan coba lagi.","rose");
-    return;
-  }
-  window.__maktabahLunasSaving = window.__maktabahLunasSaving || new Set();
-  const key=String(id);
-  if(window.__maktabahLunasSaving.has(key)) return;
-  const row=state.loans.find(l=>String(l.id)===key);
-  if(!row) return;
-  const currentMap=window.__maktabahFineStatusMap || {};
-  const previous=Object.prototype.hasOwnProperty.call(currentMap,key) ? currentMap[key]===true : !!row.dendaLunas;
-  const nextValue=!previous;
+  if(!firebaseReady||!db||!currentUser){showToast("Tidak dapat menandai lunas: koneksi atau sesi Admin belum siap. Silakan coba lagi.","rose");return;}
+  window.__maktabahLunasSaving=window.__maktabahLunasSaving||new Set();
+  const key=String(id); if(window.__maktabahLunasSaving.has(key)) return;
+  const row=state.loans.find(l=>String(l.id)===key); if(!row) return;
   const statusRef=db.ref(`${FINE_STATUS_PATH}/${key}`);
+  const button=document.querySelector(`[data-lunas="${CSS.escape(key)}"]`);
   window.__maktabahLunasSaving.add(key);
-  clearTimeout(saveTimer);
-  saveTimer=null;
-  window.__maktabahFineStatusMap={...currentMap,[key]:nextValue};
-  state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
-  renderContent();
+  if(button){button.disabled=true;button.dataset.originalText=button.textContent;button.textContent="Menyimpan...";}
   try{
-    let writeError=null;
-    try{ await withTimeout(statusRef.set(nextValue),20000,"Penyimpanan status denda"); }
-    catch(e){ writeError=e; }
-    let serverValue;
-    try{ serverValue=(await withTimeout(statusRef.once("value"),12000,"Verifikasi status denda")).val(); }
-    catch(readError){ if(!writeError) writeError=readError; }
-    if(serverValue!==nextValue){
-      if(writeError) throw writeError;
-      throw new Error("Status pembayaran belum terkonfirmasi di Firebase.");
-    }
+    // Baca nilai server terlebih dahulu; state lokal bisa tertinggal pada perangkat lain.
+    const before=(await withTimeout(statusRef.once("value"),12000,"Pemeriksaan status denda")).val();
+    const nextValue=!(before===true);
+    const tx=await statusRef.transaction(current=>{
+      if((current??null)!==(before??null)) return;
+      return nextValue;
+    },undefined,false);
+    if(!tx || !tx.committed) throw new Error("Status denda berubah dari perangkat lain. Muat ulang data sebelum mencoba lagi.");
+    const confirmed=tx.snapshot.val();
+    if(confirmed!==nextValue) throw new Error("Status pembayaran belum terkonfirmasi di Firebase.");
     window.__maktabahFineStatusMap={...(window.__maktabahFineStatusMap||{}),[key]:nextValue};
     state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:nextValue}:l);
     try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
@@ -3320,23 +3556,15 @@ async function toggleLunas(id){
     console.error("Gagal menyimpan status lunas ke Firebase",e);
     try{
       const serverValue=(await withTimeout(statusRef.once("value"),12000,"Pembacaan status denda")).val();
-      if(serverValue===true || serverValue===false){
-        window.__maktabahFineStatusMap={...(window.__maktabahFineStatusMap||{}),[key]:serverValue};
-        state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:serverValue}:l);
-        try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(storageError){}
-        showToast(serverValue===nextValue?"Status LUNAS sudah tersimpan dan terverifikasi.":"Status belum berubah di server. Silakan periksa koneksi.",serverValue===nextValue?"plum":"rose");
-      }else{
-        throw new Error("Status server belum tersedia.");
-      }
-    }catch(readError){
-      // Jangan tampilkan sukses bila server tidak dapat diverifikasi.
-      window.__maktabahFineStatusMap={...(window.__maktabahFineStatusMap||{}),[key]:previous};
-      state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:previous}:l);
-      showToast("Belum dapat memastikan penyimpanan. Periksa koneksi sebelum mencoba lagi.","rose");
-    }
+      window.__maktabahFineStatusMap={...(window.__maktabahFineStatusMap||{})};
+      if(serverValue===true||serverValue===false){window.__maktabahFineStatusMap[key]=serverValue;state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:serverValue}:l);}
+      else{delete window.__maktabahFineStatusMap[key];state.loans=state.loans.map(l=>String(l.id)===key?{...l,dendaLunas:false}:l);}
+    }catch(readError){console.warn("Status server belum dapat dibaca ulang",readError);}
+    showToast(e?.message||"Status lunas belum dapat dipastikan tersimpan. Periksa koneksi dan muat ulang.","rose");
     renderContent();
   }finally{
     window.__maktabahLunasSaving.delete(key);
+    if(button){button.disabled=false;button.textContent=button.dataset.originalText||"Tandai Lunas";delete button.dataset.originalText;}
   }
 }
 
@@ -3387,74 +3615,47 @@ function bindLoanEditModal(){
   document.getElementById("saveLeBtn").addEventListener("click", saveLoanEditFromForm);
   document.getElementById("delLeBtn").addEventListener("click", ()=>{ const id=state.loanEditModal.data.id; state.loanEditModal=null; renderModal(); deleteLoan(id); });
 }
-function saveLoanEditFromForm(){
+async function saveLoanEditFromForm(){
   if(!guardAdmin()) return;
-  const orig = state.loanEditModal.data;
-  const anggotaId = document.getElementById("le_anggota").value;
-  const kodeBuku = document.getElementById("le_buku").value;
-  const status = document.getElementById("le_status").value;
-  const perpanjang = parseInt(document.getElementById("le_perpanjang").value,10)||0;
-  const tanggalPinjam = document.getElementById("le_tglpinjam").value;
-  const tanggalJatuhTempo = document.getElementById("le_tgljatuhtempo").value;
-  const tanggalKembaliRaw = document.getElementById("le_tglkembali").value;
-  const ang = anggotaById(anggotaId); const buku = bookByKode(kodeBuku);
-  if(!ang || !buku){ showToast("Anggota dan buku wajib dipilih","rose"); return; }
-  if(!tanggalPinjam || !tanggalJatuhTempo){ showToast("Tanggal pinjam dan jatuh tempo wajib diisi","rose"); return; }
-  if(status!=="dipinjam" && !tanggalKembaliRaw){ showToast("Isi tanggal kembali untuk status ini","rose"); return; }
-  const clashing = state.loans.find(l=>l.id!==orig.id && l.kodeBuku===kodeBuku && l.status==="dipinjam" && status==="dipinjam");
-  if(clashing){ showToast(`Buku "${buku.judul}" sedang dipinjam pada transaksi lain`,"rose"); return; }
-  state.loans = state.loans.map(l=> l.id===orig.id ? {
-    ...l,
-    anggotaId: ang.id, nama: ang.nama, kelas: ang.kelas,
-    kodeBuku: buku.kode, judulBuku: buku.judul,
-    status, perpanjang,
-    tanggalPinjam, tanggalJatuhTempo,
-    tanggalKembali: status==="dipinjam" ? null : tanggalKembaliRaw,
-  } : l);
-  scheduleSave(); showToast("Transaksi peminjaman diperbarui","plum"); state.loanEditModal=null; renderModal(); renderContent();
+  const orig=state.loanEditModal.data;
+  const anggotaId=document.getElementById("le_anggota").value;
+  const kodeBuku=document.getElementById("le_buku").value;
+  const status=document.getElementById("le_status").value;
+  const perpanjang=parseInt(document.getElementById("le_perpanjang").value,10)||0;
+  const tanggalPinjam=document.getElementById("le_tglpinjam").value;
+  const tanggalJatuhTempo=document.getElementById("le_tgljatuhtempo").value;
+  const tanggalKembaliRaw=document.getElementById("le_tglkembali").value;
+  const ang=anggotaById(anggotaId), buku=bookByKode(kodeBuku);
+  if(!ang||!buku){showToast("Anggota dan buku wajib dipilih","rose");return;}
+  if(!tanggalPinjam||!tanggalJatuhTempo){showToast("Tanggal pinjam dan jatuh tempo wajib diisi","rose");return;}
+  if(status!=="dipinjam"&&!tanggalKembaliRaw){showToast("Isi tanggal kembali untuk status ini","rose");return;}
+  const clashing=state.loans.find(l=>l.id!==orig.id&&l.kodeBuku===kodeBuku&&l.status==="dipinjam"&&status==="dipinjam");
+  if(clashing){showToast(`Buku "${buku.judul}" sedang dipinjam pada transaksi lain`,"rose");return;}
+  try{
+    await commitMaktabahMutation(()=>{
+      state.loans=state.loans.map(l=>l.id===orig.id?{...l,anggotaId:ang.id,nama:ang.nama,kelas:ang.kelas,kodeBuku:buku.kode,judulBuku:buku.judul,status,perpanjang,tanggalPinjam,tanggalJatuhTempo,tanggalKembali:status==="dipinjam"?null:tanggalKembaliRaw}:l);
+    },{closeModal:"loanEditModal",success:"Transaksi peminjaman berhasil diperbarui."});
+  }catch(e){console.error("Edit transaksi gagal",e);}
 }
 async function deleteLoan(id){
-  if(!guardAdmin() || window.__maktabahDeleteInProgress) return;
-  const l = state.loans.find(x=>String(x.id)===String(id)); if(!l) return;
+  if(!guardAdmin()||window.__maktabahDeleteInProgress) return;
+  const l=state.loans.find(x=>String(x.id)===String(id)); if(!l) return;
   if(!confirm(`Hapus transaksi peminjaman "${l.judulBuku}" oleh ${l.nama}? Data ini juga akan dihapus dari riwayat buku dan riwayat anggota.`)) return;
-  // Kunci listener agar snapshot lama tidak mengembalikan item yang baru dihapus.
   window.__maktabahDeleteInProgress=true;
-  state.deletedLoanIds = Array.from(new Set([...(state.deletedLoanIds||[]).map(String), String(id)]));
-  state.loans = state.loans.filter(x=>String(x.id)!==String(id));
-  state.riwayatLoans = (state.riwayatLoans||[]).filter(x=>String(x.id)!==String(id));
-  try{
-    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
-    if(firebaseReady && currentUser) await enqueuePrivateSave();
-    showToast("Transaksi dan riwayatnya dihapus","rose");
-  }catch(e){
-    console.error("Gagal menyimpan penghapusan riwayat",e);
-    showToast("Penghapusan belum tersimpan ke Firebase. Periksa koneksi lalu coba lagi.","rose");
-  }finally{
-    window.__maktabahDeleteInProgress=false;
-  }
-  renderContent();
+  try{await commitMaktabahMutation(()=>{state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),String(id)]));state.loans=state.loans.filter(x=>String(x.id)!==String(id));state.riwayatLoans=(state.riwayatLoans||[]).filter(x=>String(x.id)!==String(id));},{success:"Transaksi dan riwayatnya berhasil dihapus."});}
+  catch(e){console.error("Gagal menyimpan penghapusan transaksi",e);}
+  finally{window.__maktabahDeleteInProgress=false;}
 }
 async function clearHistoryLoans(){
-  if(!guardAdmin() || window.__maktabahDeleteInProgress) return;
-  const hist = historyLoans();
-  if(hist.length===0){ showToast("Tidak ada riwayat untuk dihapus","rose"); return; }
+  if(!guardAdmin()||window.__maktabahDeleteInProgress) return;
+  const hist=historyLoans();
+  if(!hist.length){showToast("Tidak ada riwayat untuk dihapus","rose");return;}
   if(!confirm(`Hapus semua ${hist.length} riwayat pengembalian? Catatan denda terkait juga akan hilang. Tindakan ini tidak bisa dibatalkan.`)) return;
   window.__maktabahDeleteInProgress=true;
-  const histIds = new Set(hist.map(l=>String(l.id)));
-  state.deletedLoanIds = Array.from(new Set([...(state.deletedLoanIds||[]).map(String), ...histIds]));
-  state.loans = state.loans.filter(l=>!histIds.has(String(l.id)));
-  state.riwayatLoans = (state.riwayatLoans||[]).filter(l=>!histIds.has(String(l.id)));
-  try{
-    try{ localStorage.setItem(STORAGE_KEY,persistPayload()); }catch(e){}
-    if(firebaseReady && currentUser) await enqueuePrivateSave();
-    showToast("Riwayat pengembalian dihapus","rose");
-  }catch(e){
-    console.error("Gagal menyimpan penghapusan riwayat",e);
-    showToast("Penghapusan belum tersimpan ke Firebase. Periksa koneksi lalu coba lagi.","rose");
-  }finally{
-    window.__maktabahDeleteInProgress=false;
-  }
-  renderContent();
+  const histIds=new Set(hist.map(l=>String(l.id)));
+  try{await commitMaktabahMutation(()=>{state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),...histIds]));state.loans=state.loans.filter(l=>!histIds.has(String(l.id)));state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>!histIds.has(String(l.id)));},{success:"Riwayat pengembalian berhasil dihapus."});}
+  catch(e){console.error("Gagal menyimpan penghapusan riwayat",e);}
+  finally{window.__maktabahDeleteInProgress=false;}
 }
 
 /* ============ LITERASI ============ */
@@ -3571,26 +3772,19 @@ function tableWrap(headers, rows, lateFlags=null){
     ${rows.length===0?`<tr><td colspan="${headers.length}" class="muted">Tidak ada data.</td></tr>`:rows.map((r,i)=>`<tr${Array.isArray(lateFlags)&&lateFlags[i]?' class="report-late-return"':''}>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}
   </tbody></table></div>`;
 }
-function deleteLaporanData(){
+async function deleteLaporanData(){
   if(!guardAdmin()) return;
-  if(!["peminjaman","pengembalian","denda","keterlambatan"].includes(state.sub)){
-    showToast("Penghapusan hanya tersedia untuk laporan transaksi.","rose"); return;
-  }
-  const from=state.laporanFrom, to=state.laporanTo;
-  if(!from && !to){ showToast("Pilih periode Dari–Sampai terlebih dahulu agar aman.","rose"); return; }
-  const inPeriod=(date)=>!!date && (!from || date>=from) && (!to || date<=to);
-  let ids=new Set();
-  if(state.sub==="peminjaman" || state.sub==="keterlambatan"){
-    state.loans.filter(l=>inPeriod(l.tanggalPinjam)).forEach(l=>ids.add(l.id));
-  } else {
-    [...state.loans,...(state.riwayatLoans||[])].filter(l=>inPeriod(l.tanggalKembali)).forEach(l=>ids.add(l.id));
-  }
-  if(!ids.size){ showToast("Tidak ada data transaksi pada periode tersebut.","rose"); return; }
+  if(!["peminjaman","pengembalian","denda","keterlambatan"].includes(state.sub)){showToast("Penghapusan hanya tersedia untuk laporan transaksi.","rose");return;}
+  const from=state.laporanFrom,to=state.laporanTo;
+  if(!from&&!to){showToast("Pilih periode Dari–Sampai terlebih dahulu agar aman.","rose");return;}
+  const inPeriod=date=>!!date&&(!from||date>=from)&&(!to||date<=to);
+  const ids=new Set();
+  if(state.sub==="peminjaman"||state.sub==="keterlambatan") state.loans.filter(l=>inPeriod(l.tanggalPinjam)).forEach(l=>ids.add(String(l.id)));
+  else [...state.loans,...(state.riwayatLoans||[])].filter(l=>inPeriod(l.tanggalKembali)).forEach(l=>ids.add(String(l.id)));
+  if(!ids.size){showToast("Tidak ada data transaksi pada periode tersebut.","rose");return;}
   if(!confirm(`Hapus ${ids.size} transaksi yang menjadi sumber laporan pada periode ${from||"awal"} s.d. ${to||"akhir"}? Data buku dan anggota tidak ikut terhapus. Tindakan ini tidak bisa dibatalkan.`)) return;
-  state.deletedLoanIds = Array.from(new Set([...(state.deletedLoanIds||[]).map(String), ...[...ids].map(String)]));
-  state.loans=state.loans.filter(l=>!ids.has(l.id));
-  state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>!ids.has(l.id));
-  scheduleSave(); showToast(`${ids.size} data transaksi dihapus dari sumber laporan.` ,"rose"); renderContent();
+  try{await commitMaktabahMutation(()=>{state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),...ids]));state.loans=state.loans.filter(l=>!ids.has(String(l.id)));state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>!ids.has(String(l.id)));},{success:`${ids.size} data transaksi dihapus dari sumber laporan.`});}
+  catch(e){console.error("Penghapusan data laporan gagal",e);}
 }
 function exportLaporanCSV(){
   const el = document.querySelector(".table-wrap table");
@@ -3711,30 +3905,25 @@ function settingHTML(){
 }
 function bindSetting(){
   const btn=document.getElementById("saveSettingBtn"); if(!btn) return;
-  btn.addEventListener("click", ()=>{
+  btn.addEventListener("click",async()=>{
     if(!guardAdmin()) return;
-    state.settings = {
+    const next={
       ...state.settings,
-      namaMaktabah: document.getElementById("st_nama").value.trim() || state.settings.namaMaktabah,
-      tentangMaktabah: document.getElementById("st_tentang").value.trim() || state.settings.tentangMaktabah,
-      panduanPeminjaman: (Array.from(document.querySelectorAll("[data-guide-title]")).map((el,i)=>({
-        judul: el.value.trim(),
-        detail: document.querySelector(`[data-guide-detail="${i}"]`)?.value.trim() || ""
-      })).filter(x=>x.judul || x.detail)),
-      panduanLangkah: Array.from(document.querySelectorAll("[data-guide-title]")).map((el,i)=>({
-        judul: el.value.trim(),
-        detail: document.querySelector(`[data-guide-detail="${i}"]`)?.value.trim() || ""
-      })).filter(x=>x.judul || x.detail),
-      pengumumanMaktabah: Array.from(document.querySelectorAll("[data-ann-title]")).map((el,i)=>({
-        judul: el.value.trim(),
-        isi: document.querySelector(`[data-ann-body="${i}"]`)?.value.trim() || "",
-        tanggal: document.querySelector(`[data-ann-date="${i}"]`)?.value.trim() || ""
-      })).filter(x=>x.judul || x.isi),
-      lamaPinjamHari: parseInt(document.getElementById("st_lama").value,10) || 7,
-      dendaPerHari: parseInt(document.getElementById("st_denda").value,10) || 0,
-      pinAdmin: document.getElementById("st_pin").value.trim() || state.settings.pinAdmin,
+      namaMaktabah:document.getElementById("st_nama").value.trim()||state.settings.namaMaktabah,
+      tentangMaktabah:document.getElementById("st_tentang").value.trim()||state.settings.tentangMaktabah,
+      panduanPeminjaman:Array.from(document.querySelectorAll("[data-guide-title]")).map((el,i)=>({judul:el.value.trim(),detail:document.querySelector(`[data-guide-detail="${i}"]`)?.value.trim()||""})).filter(x=>x.judul||x.detail),
+      panduanLangkah:Array.from(document.querySelectorAll("[data-guide-title]")).map((el,i)=>({judul:el.value.trim(),detail:document.querySelector(`[data-guide-detail="${i}"]`)?.value.trim()||""})).filter(x=>x.judul||x.detail),
+      pengumumanMaktabah:Array.from(document.querySelectorAll("[data-ann-title]")).map((el,i)=>({judul:el.value.trim(),isi:document.querySelector(`[data-ann-body="${i}"]`)?.value.trim()||"",tanggal:document.querySelector(`[data-ann-date="${i}"]`)?.value.trim()||""})).filter(x=>x.judul||x.isi),
+      lamaPinjamHari:parseInt(document.getElementById("st_lama").value,10)||7,
+      dendaPerHari:parseInt(document.getElementById("st_denda").value,10)||0,
+      pinAdmin:document.getElementById("st_pin").value.trim()||state.settings.pinAdmin
     };
-    scheduleSave(); showToast("Pengaturan disimpan","plum"); render();
+    btn.disabled=true; const oldText=btn.textContent; btn.textContent="Menyimpan ke server...";
+    try{
+      await commitMaktabahMutation(()=>{state.settings=next;},{success:"Pengaturan berhasil disimpan."});
+      render();
+    }catch(e){console.error("Simpan pengaturan gagal",e);}
+    finally{btn.disabled=false;btn.textContent=oldText;}
   });
 }
 
@@ -3792,21 +3981,27 @@ function bindBackup(){
     showToast("Backup diunduh","plum");
   });
   const f=document.getElementById("restoreFile");
-  if(f) f.addEventListener("change", (e)=>{
+  if(f) f.addEventListener("change", async (e)=>{
     if(!guardAdmin()) return;
     const file=e.target.files[0]; if(!file) return;
-    const reader=new FileReader();
-    reader.onload = ()=>{
-      try{
-        const p = JSON.parse(reader.result);
-        if(!confirm("Timpa semua data saat ini dengan file backup ini?")) return;
-        if(Array.isArray(p.books)) state.books=p.books; if(Array.isArray(p.loans)) state.loans=p.loans; if(Array.isArray(p.kategoriList)) state.kategoriList=p.kategoriList;
-        if(Array.isArray(p.anggota)) state.anggota=p.anggota; if(Array.isArray(p.rakList)) state.rakList=p.rakList; if(Array.isArray(p.kontribList)) state.kontribList=p.kontribList;
-        if(Array.isArray(p.targetLiterasi)) state.targetLiterasi=p.targetLiterasi; if(p.settings && typeof p.settings==='object') state.settings={...state.settings,...p.settings};
-        ensureStateShape(); scheduleSave(); showToast("Data berhasil dipulihkan","plum"); render();
-      }catch(err){ showToast("File backup tidak valid","rose"); }
-    };
-    reader.readAsText(file);
+    try{
+      const raw=await file.text();
+      const p=JSON.parse(raw);
+      if(!p||typeof p!=="object"||Array.isArray(p)) throw new Error("Format backup tidak valid.");
+      if(!confirm("Timpa semua data saat ini dengan file backup ini?")) return;
+      await commitMaktabahMutation(()=>{
+        if(Array.isArray(p.books)) state.books=p.books;
+        if(Array.isArray(p.loans)) state.loans=p.loans;
+        if(Array.isArray(p.kategoriList)) state.kategoriList=p.kategoriList;
+        if(Array.isArray(p.anggota)) state.anggota=p.anggota;
+        if(Array.isArray(p.rakList)) state.rakList=p.rakList;
+        if(Array.isArray(p.kontribList)) state.kontribList=p.kontribList;
+        if(Array.isArray(p.targetLiterasi)) state.targetLiterasi=p.targetLiterasi;
+        if(p.settings&&typeof p.settings==="object") state.settings={...state.settings,...p.settings};
+        ensureStateShape();
+      },{success:"Data backup berhasil dipulihkan dan tersimpan di server."});
+    }catch(err){console.error("Restore backup gagal",err);showToast(err?.message||"File backup tidak valid atau gagal disimpan.","rose");}
+    finally{e.target.value="";}
   });
 }
 
@@ -4081,13 +4276,16 @@ async function importBooksFromFile(file){
   if(!importedRows.length) throw new Error("File terbaca, tetapi format data buku belum dikenali. Pastikan ada kode buku dan judul.");
 
   let added=0, skipped=0;
-  importedRows.forEach(d=>{
-    const kode=normalizeBookCode(d.kode); if(!kode||!d.judul){skipped++;return;}
-    if(state.books.some(b=>normalizeBookCode(b.kode)===kode)){skipped++;return;}
-    state.books.push({id:uid(),kode,kategori:d.kategori||kode[0]||"A",judul:cleanImportCell(d.judul),penyusun:cleanImportCell(d.penyusun),penerbit:cleanImportCell(d.penerbit),tahunTerbit:parseYear(d.tahunTerbit),sumber:cleanImportCell(d.sumber)||"Beli",tanggalDiterima:d.tanggalDiterima||iso(todayDate),rak:cleanImportCell(d.rak),keterangan:cleanImportCell(d.keterangan),statusFisik:"baik"});
-    added++;
-  });
-  scheduleSave(); render(); showToast(`Import buku selesai: ${added} masuk, ${skipped} dilewati.`, added?"plum":"rose");
+  try{
+    await commitMaktabahMutation(()=>{
+      importedRows.forEach(d=>{
+        const kode=normalizeBookCode(d.kode); if(!kode||!d.judul){skipped++;return;}
+        if(state.books.some(b=>normalizeBookCode(b.kode)===kode)){skipped++;return;}
+        state.books.push({id:uid(),kode,kategori:d.kategori||kode[0]||"A",judul:cleanImportCell(d.judul),penyusun:cleanImportCell(d.penyusun),penerbit:cleanImportCell(d.penerbit),tahunTerbit:parseYear(d.tahunTerbit),sumber:cleanImportCell(d.sumber)||"Beli",tanggalDiterima:d.tanggalDiterima||iso(todayDate),rak:cleanImportCell(d.rak),keterangan:cleanImportCell(d.keterangan),statusFisik:"baik"});
+        added++;
+      });
+    },{success:`Import buku selesai: ${added} masuk, ${skipped} dilewati.`});
+  }catch(e){throw new Error(`Import buku gagal disimpan ke server: ${e.message||e}`);}
 }
 
 async function importMembersFromFile(file){
@@ -4156,26 +4354,21 @@ async function importMembersFromFile(file){
   if(!candidates.length) throw new Error("File terbaca, tetapi data anggota belum dikenali. Sistem mencari NIS (minimal 8 digit) dan nama santri.");
 
   let added=0,skipped=0;
-  const existingNis=new Set(state.anggota.map(a=>cleanImportCell(a.nis)).filter(Boolean));
-  const existingNames=new Set(state.anggota.map(a=>cleanImportCell(a.nama).toLowerCase()).filter(Boolean));
-  const incomingNis=new Set(), incomingNames=new Set();
-  candidates.forEach(d=>{
-    const nis=cleanImportCell(d.nis), nama=cleanImportCell(d.nama);
-    if(!nama){skipped++;return;}
-    const nk=nama.toLowerCase();
-    if((nis && (existingNis.has(nis)||incomingNis.has(nis))) || existingNames.has(nk) || incomingNames.has(nk)){skipped++;return;}
-    state.anggota.push({
-      id:uid(),
-      nis,
-      nama,
-      kelas:cleanImportCell(d.kelas)||"1",
-      lp:(cleanImportCell(d.lp)||"L").toUpperCase()==="P"?"P":"L",
-      alamat:cleanImportCell(d.alamat),
-      tglDaftar:parseDateFlexible(d.tglDaftar)||iso(todayDate)
-    });
-    if(nis) incomingNis.add(nis); incomingNames.add(nk); added++;
-  });
-  scheduleSave(); render(); showToast(`Import anggota selesai: ${added} masuk, ${skipped} dilewati.`, added?"plum":"rose");
+  try{
+    await commitMaktabahMutation(()=>{
+      const existingNis=new Set(state.anggota.map(a=>cleanImportCell(a.nis)).filter(Boolean));
+      const existingNames=new Set(state.anggota.map(a=>cleanImportCell(a.nama).toLowerCase()).filter(Boolean));
+      const incomingNis=new Set(),incomingNames=new Set();
+      candidates.forEach(d=>{
+        const nis=cleanImportCell(d.nis),nama=cleanImportCell(d.nama);
+        if(!nama){skipped++;return;}
+        const nk=nama.toLowerCase();
+        if((nis&&(existingNis.has(nis)||incomingNis.has(nis)))||existingNames.has(nk)||incomingNames.has(nk)){skipped++;return;}
+        state.anggota.push({id:uid(),nis,nama,kelas:cleanImportCell(d.kelas)||"1",lp:(cleanImportCell(d.lp)||"L").toUpperCase()==="P"?"P":"L",alamat:cleanImportCell(d.alamat),tglDaftar:parseDateFlexible(d.tglDaftar)||iso(todayDate)});
+        if(nis) incomingNis.add(nis); incomingNames.add(nk); added++;
+      });
+    },{success:`Import anggota selesai: ${added} masuk, ${skipped} dilewati.`});
+  }catch(e){throw new Error(`Import anggota gagal disimpan ke server: ${e.message||e}`);}
 }
 
 function bindImpexp(){
@@ -4393,11 +4586,15 @@ function bindLoanModal(){
   document.getElementById("loanBackdrop").addEventListener("click", e=>{ if(e.target.id==="loanBackdrop"){ state.loanTarget=null; renderModal(); } });
   document.getElementById("closeLoanModal").addEventListener("click", ()=>{ state.loanTarget=null; renderModal(); });
   const cf=document.getElementById("confirmLoanBtn");
-  if(cf) cf.addEventListener("click", ()=>{
+  if(cf) cf.addEventListener("click", async ()=>{
     const ang=anggotaById(document.getElementById("l_anggota").value); const b=state.loanTarget;
-    if(!ang){ showToast("Pilih anggota","rose"); return; }
-    state.loans.unshift({ id:uid(), kodeBuku:b.kode, judulBuku:b.judul, anggotaId:ang.id, nama:ang.nama, kelas:ang.kelas, tanggalPinjam:iso(todayDate), tanggalJatuhTempo:iso(addDays(todayDate,state.settings.lamaPinjamHari)), tanggalKembali:null, status:"dipinjam", perpanjang:0, dendaLunas:false });
-    scheduleSave(); showToast(`"${b.judul}" dipinjamkan ke ${ang.nama}`,"plum"); state.loanTarget=null; renderModal(); renderContent();
+    if(!ang||!b){showToast("Pilih anggota dan buku","rose");return;}
+    const loan={id:uid(),kodeBuku:b.kode,judulBuku:b.judul,anggotaId:ang.id,nama:ang.nama,kelas:ang.kelas,tanggalPinjam:iso(todayDate),tanggalJatuhTempo:iso(addDays(todayDate,state.settings.lamaPinjamHari)),tanggalKembali:null,status:"dipinjam",perpanjang:0,dendaLunas:false};
+    cf.disabled=true; const oldText=cf.textContent; cf.textContent="Menyimpan ke server...";
+    try{
+      await commitMaktabahMutation(()=>{state.loans=[loan,...state.loans];},{closeModal:"loanTarget",success:`"${b.judul}" berhasil dipinjamkan kepada ${ang.nama}.`});
+    }catch(e){console.error("Peminjaman gagal",e);}
+    finally{cf.disabled=false;cf.textContent=oldText;}
   });
 }
 function openLoanModal(bookId){ const b=state.books.find(x=>x.id===bookId); if(!b) return; state.loanTarget=b; renderModal(); }
@@ -4830,22 +5027,17 @@ function bindScanConfirm(){
     if(window.__maktabahReturnSaving) return;
     const c=state.scanConfirm, l=state.loans.find(x=>x.id===c?.loanId);
     if(!l){state.scanConfirm=null;renderModal();return;}
+    if(l.status!=="dipinjam"){showToast("Transaksi ini sudah tidak aktif. Muat ulang data terbaru.","rose");state.scanConfirm=null;renderModal();return;}
     const previousLoans=state.loans;
-    const previousPayload=(()=>{try{return localStorage.getItem(STORAGE_KEY);}catch(e){return null;}})();
     const button=document.getElementById("confirmScanReturn");
     window.__maktabahReturnSaving=true;
     if(button){button.disabled=true;button.textContent="Menyimpan pengembalian...";}
-    // Batalkan debounce lama agar tidak ada penyimpanan tertunda yang menimpa
-    // status pengembalian yang sedang dikonfirmasi.
     clearTimeout(saveTimer); saveTimer=null;
-    state.loans=state.loans.map(x=>String(x.id)===String(l.id)?{...x,status:"dikembalikan",tanggalKembali:iso(todayDate)}:x);
     try{
-      // Simpan cache lokal segera. Ke Firebase hanya kirim node transaksi
-      // peminjaman, bukan seluruh database buku/anggota/pengaturan.
-      try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
       if(!firebaseReady || !db || !currentUser) throw new Error("Koneksi atau sesi Firebase belum siap. Silakan masuk kembali dan coba simpan.");
       const targetId=String(l.id);
       const returnedAt=iso(todayDate);
+      // Server dikonfirmasi terlebih dahulu. UI dan cache baru berubah sesudahnya.
       await saveReturnStatus(targetId,returnedAt);
       state.loans=state.loans.map(row=>String(row.id)===targetId?{...row,status:"dikembalikan",tanggalKembali:returnedAt}:row);
       try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
