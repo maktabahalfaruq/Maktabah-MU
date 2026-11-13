@@ -3213,20 +3213,20 @@ async function saveBookFromForm(){
     // transaksi Firebase tidak mendapat konfirmasi commit.
     await enqueuePrivateSave();
 
-    // Baca ulang koleksi buku dari server sebagai verifikasi tambahan.
-    const verifySnap=await withTimeout(
-      db.ref(`${DATA_PATH}/books`).once('value'),
-      15000,
-      'Verifikasi buku di server'
-    );
-    const serverBooks=maktabahRows(verifySnap.val());
-    const serverBook=serverBooks.find(b=>b && String(b.id)===String(data.id));
-    if(!serverBook || String(serverBook.kode||'').toUpperCase()!==data.kode){
-      throw new Error('Firebase belum mengembalikan data buku yang sama. Buku belum dinyatakan berhasil tersimpan.');
+    // enqueuePrivateSave() hanya selesai setelah transaksi Firebase terkonfirmasi.
+    // savePrivateFirebase() sudah mengambil tx.snapshot dan memperbarui
+    // maktabahServerBaseline/state. Jangan melakukan once('value') kedua:
+    // pembacaan tambahan ini dapat gagal dengan "disconnect" walaupun transaksi
+    // penyimpanan buku sebenarnya sudah berhasil commit.
+    const confirmedBooks=maktabahRows(maktabahServerBaseline?.books);
+    const confirmedBook=confirmedBooks.find(b=>b && String(b.id)===String(data.id));
+    if(!confirmedBook || String(confirmedBook.kode||'').toUpperCase()!==data.kode){
+      throw new Error('Transaksi selesai, tetapi data buku belum ditemukan pada konfirmasi transaksi Firebase. Muat ulang data sebelum mencoba menyimpan ulang.');
     }
 
-    // Gunakan data hasil baca ulang server, lalu baru perbarui cache lokal/UI.
-    state.books=maktabahRows(verifySnap.val());
+    // Pakai snapshot transaksi yang sudah dikonfirmasi, tanpa mengunduh ulang
+    // seluruh koleksi buku dari server.
+    state.books=confirmedBooks;
     try{localStorage.setItem(STORAGE_KEY,persistPayload());}
     catch(storageError){
       console.warn('Data sudah tersimpan di Firebase, tetapi cache lokal gagal diperbarui.',storageError);
