@@ -15,14 +15,13 @@
 <script src="https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js"></script>
   <script>
 const firebaseConfig = {
-  apiKey: "AIzaSyA44b_ruY8nLz_Egt_Opj8l2mCa03rop_0",
-  authDomain: "arisan-walimah-ummah.firebaseapp.com",
-  databaseURL: "https://arisan-walimah-ummah-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "arisan-walimah-ummah",
-  storageBucket: "arisan-walimah-ummah.firebasestorage.app",
-  messagingSenderId: "808217881031",
-  appId: "1:808217881031:web:a240faa30509e0e37a91e2",
-  measurementId: "G-5SRH6YXL4Z"
+  apiKey: "AIzaSyBa7A72n96L5SCQwyWl5sxx6PYyqtG-8Jo",
+  authDomain: "maktabah-alfaruq.firebaseapp.com",
+  databaseURL: "https://maktabah-alfaruq-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "maktabah-alfaruq",
+  storageBucket: "maktabah-alfaruq.firebasestorage.app",
+  messagingSenderId: "544365537244",
+  appId: "1:544365537244:web:8f93b6752e61fa1ebe5119"
 };
 </script>
 <style>
@@ -1074,6 +1073,8 @@ async function savePublicMirror(){
       settings: { namaMaktabah: state.settings.namaMaktabah, tentangMaktabah: state.settings.tentangMaktabah, panduanPeminjaman: state.settings.panduanPeminjaman }
     });
     state.publicStats=stats;
+    window.__maktabahPublicFetchedAt=0;
+    try{ localStorage.removeItem(PUBLIC_CACHE_KEY); }catch(_){}
   }catch(e){ console.error("Gagal memperbarui katalog publik",e); }
 }
 
@@ -1467,11 +1468,24 @@ function scheduleSave(){
   operation.catch(()=>{});
   return operation;
 }
+// Hemat kuota download Firebase (paket gratis): katalog publik tidak diunduh ulang
+// setiap kali halaman dibuka atau setiap kali mencari; cukup sekali per beberapa menit.
+const PUBLIC_CACHE_KEY="maktabah-public-cache-v1";
+const PUBLIC_REFRESH_MS=10*60*1000;
 async function loadPublicData(){
   if(firebaseReady){
     try{
-      const snap=await db.ref(PUBLIC_PATH).once('value');
-      const val=snap.val();
+      let val=null, fromCache=false;
+      try{
+        const c=JSON.parse(localStorage.getItem(PUBLIC_CACHE_KEY)||"null");
+        if(c && c.val && Date.now()-c.t<PUBLIC_REFRESH_MS){ val=c.val; fromCache=true; window.__maktabahPublicFetchedAt=c.t; }
+      }catch(_){}
+      if(!fromCache){
+        const snap=await db.ref(PUBLIC_PATH).once('value');
+        val=snap.val();
+        window.__maktabahPublicFetchedAt=Date.now();
+        try{ if(val) localStorage.setItem(PUBLIC_CACHE_KEY,JSON.stringify({t:Date.now(),val})); }catch(_){}
+      }
       if(val){
         if(Array.isArray(val.books) && val.books.length) state.books=val.books;
         if(val.stats && typeof val.stats==="object") state.publicStats=val.stats;
@@ -1793,9 +1807,13 @@ function publicBookList(){
 }
 async function refreshPublicCatalogBeforeSearch(){
   if(!firebaseReady || !db) return;
+  // Lewati unduhan ulang jika katalog baru saja diambil (hemat kuota gratis).
+  if(Date.now()-(window.__maktabahPublicFetchedAt||0)<PUBLIC_REFRESH_MS) return;
   try{
     const snap=await withTimeout(db.ref(PUBLIC_PATH).once("value"),7000,"Data katalog publik");
     const val=snap.val();
+    window.__maktabahPublicFetchedAt=Date.now();
+    try{ if(val) localStorage.setItem(PUBLIC_CACHE_KEY,JSON.stringify({t:Date.now(),val})); }catch(_){}
     if(val && Array.isArray(val.books)){
       state.books=val.books;
       if(val.stats && typeof val.stats==="object") state.publicStats=val.stats;
