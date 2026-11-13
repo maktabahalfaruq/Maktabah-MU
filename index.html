@@ -1530,18 +1530,31 @@ async function saveReturnStatus(id, tanggalKembali, status="dikembalikan"){
 async function loadPrivateData(){
   if(!firebaseReady || !currentUser) return false;
   try{
-    const [dataSnap,settingsSnap,legacySnap,fineStatusSnap,returnStatusSnap]=await Promise.all([
-      withTimeout(db.ref(DATA_PATH).once('value'),7000,'Data Maktabah'),
+    // Baca data aktif terlebih dahulu. Jalur legacy hanya dibaca saat data aktif
+    // benar-benar belum ada, sehingga tidak mengunduh salinan database lama
+    // pada setiap login normal.
+    const dataSnap=await withTimeout(
+      db.ref(DATA_PATH).once('value'),7000,'Data Maktabah'
+    );
+    const dataVal=dataSnap.val();
+
+    const [settingsSnap,fineStatusSnap,returnStatusSnap]=await Promise.all([
       withTimeout(db.ref(SETTINGS_PATH).once('value'),7000,'Pengaturan Maktabah'),
-      withTimeout(db.ref(FIREBASE_PATH).once('value'),7000,'Data lama Maktabah'),
       withTimeout(db.ref(FINE_STATUS_PATH).once('value'),7000,'Status pembayaran denda'),
       withTimeout(db.ref(RETURN_STATUS_PATH).once('value'),7000,'Status pengembalian buku')
     ]);
-    const dataVal=dataSnap.val();
     const settingsVal=settingsSnap.val();
-    const legacyVal=legacySnap.val();
     const fineStatusVal=fineStatusSnap.val();
     const returnStatusVal=returnStatusSnap.val();
+
+    let legacyVal=null;
+    if(!dataVal){
+      const legacySnap=await withTimeout(
+        db.ref(FIREBASE_PATH).once('value'),7000,'Data lama Maktabah'
+      );
+      legacyVal=legacySnap.val();
+    }
+
     if(dataVal) applyPersisted({...dataVal, ...(settingsVal?{settings:settingsVal}: {})});
     maktabahServerBaseline=maktabahClone(dataVal||{});
     if(settingsVal) maktabahServerBaseline.settings=maktabahClone(settingsVal);
