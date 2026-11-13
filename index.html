@@ -1212,12 +1212,13 @@ async function savePrivateFirebase(){
   // Status denda/pengembalian tetap berada pada cabang khusus yang dikelola
   // oleh aksi masing-masing, sehingga tidak tertimpa oleh penyimpanan koleksi.
   const settingsPatch=isAdmin()?maktabahChangedFields(baseline.settings||{},state.settings||{}):{};
-  const privateRef=db.ref('maktabahAlFaruq/private');
+  // Transaksi dipersempit ke cabang data saja (bukan seluruh cabang private) agar
+  // payload kecil dan tidak terputus ("disconnect") di jaringan seluler.
+  const privateRef=db.ref(DATA_PATH);
   let detectedConflicts=[];
-  const tx=await privateRef.transaction(currentPrivate=>{
+  const tx=await privateRef.transaction(currentData=>{
     detectedConflicts=[];
-    const root={...(currentPrivate||{})};
-    const serverData={...(root.data||{})};
+    const serverData={...(currentData||{})};
     const deleted=new Set([
       ...maktabahRows(serverData.deletedLoanIds).map(String),
       ...(payload.deletedLoanIds||[]).map(String)
@@ -1283,10 +1284,18 @@ async function savePrivateFirebase(){
       serverData[collection]=Array.from(serverMap.values());
     });
     if(detectedConflicts.length) return;
-    root.data=serverData;
-    if(isAdmin() && Object.keys(settingsPatch).length){
+    return serverData;
+  },undefined,false);
+  if(!tx || !tx.committed){
+    if(detectedConflicts.length) throw new Error('Ada perubahan bersamaan pada data yang sama dari perangkat lain (termasuk kemungkinan penghapusan atau pengaturan). Muat ulang data terbaru, periksa perubahan, lalu simpan kembali.');
+    throw new Error('Firebase belum mengonfirmasi penyimpanan data dan pengaturan Maktabah.');
+  }
+  let savedSettingsVal=null;
+  if(isAdmin() && Object.keys(settingsPatch).length){
+    const stx=await db.ref(SETTINGS_PATH).transaction(remoteSettings=>{
+      detectedConflicts=[];
       const baseSettings=baseline.settings||{};
-      const remoteSettings=root.settings||{};
+      remoteSettings=remoteSettings||{};
       Object.keys(settingsPatch).forEach(field=>{
         const baseValue=baseSettings[field];
         const remoteValue=remoteSettings[field];
@@ -1295,19 +1304,20 @@ async function savePrivateFirebase(){
           detectedConflicts.push(`settings:${field}`);
         }
       });
+      if(detectedConflicts.length) return;
       const mergedSettings={...remoteSettings};
       Object.entries(settingsPatch).forEach(([field,value])=>{
         if(value===null) delete mergedSettings[field]; else mergedSettings[field]=value;
       });
-      root.settings=mergedSettings;
+      return mergedSettings;
+    },undefined,false);
+    if(!stx || !stx.committed){
+      if(detectedConflicts.length) throw new Error('Ada perubahan bersamaan pada pengaturan dari perangkat lain. Muat ulang data terbaru lalu simpan kembali.');
+      throw new Error('Firebase belum mengonfirmasi penyimpanan pengaturan Maktabah.');
     }
-    return root;
-  },undefined,false);
-  if(!tx || !tx.committed){
-    if(detectedConflicts.length) throw new Error('Ada perubahan bersamaan pada data yang sama dari perangkat lain (termasuk kemungkinan penghapusan atau pengaturan). Muat ulang data terbaru, periksa perubahan, lalu simpan kembali.');
-    throw new Error('Firebase belum mengonfirmasi penyimpanan data dan pengaturan Maktabah.');
+    savedSettingsVal=stx.snapshot.val();
   }
-  const privateSnapshot=tx.snapshot.val()||{};
+  const privateSnapshot={data:tx.snapshot.val()||{},settings:savedSettingsVal};
   const serverData=privateSnapshot.data||{};
   const saved={};
   saved.deletedLoanIds=maktabahRows(serverData.deletedLoanIds).map(String);
