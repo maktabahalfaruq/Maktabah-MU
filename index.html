@@ -3221,7 +3221,15 @@ async function saveBookFromForm(){
     setSaving(true,'Menyimpan ke server...');
     // enqueuePrivateSave menyelesaikan antrean secara serial dan menolak bila
     // transaksi Firebase tidak mendapat konfirmasi commit.
-    await enqueuePrivateSave();
+    try{
+      await enqueuePrivateSave();
+    }catch(firstErr){
+      // Koneksi seluler kadang terputus sesaat; coba sekali lagi sebelum menyerah.
+      if(String(firstErr?.message||firstErr).toLowerCase()!=='disconnect') throw firstErr;
+      setSaving(true,'Koneksi terputus, mencoba lagi...');
+      await new Promise(r=>setTimeout(r,2000));
+      await enqueuePrivateSave();
+    }
 
     // enqueuePrivateSave() hanya selesai setelah transaksi Firebase terkonfirmasi.
     // savePrivateFirebase() sudah mengambil tx.snapshot dan memperbarui
@@ -3255,7 +3263,12 @@ async function saveBookFromForm(){
       state.books=oldBooks;
       state.loans=oldLoans;
     }
-    const message=err?.message||'Terjadi kesalahan yang tidak diketahui.';
+    let message=err?.message||'Terjadi kesalahan yang tidak diketahui.';
+    try{
+      const kb=v=>Math.round(JSON.stringify(v||[]).length/1024)+' KB';
+      const big=(oldBooks||[]).filter(b=>b&&typeof b.coverUrl==='string'&&b.coverUrl.startsWith('data:')).length;
+      message+='\n\n[Diagnostik] buku: '+kb(oldBooks)+' ('+(oldBooks||[]).length+' judul, '+big+' cover base64), peminjaman: '+kb(oldLoans);
+    }catch(_){}
     alert('BUKU BELUM DAPAT DIKONFIRMASI TERSIMPAN DI SERVER.\n\n'+message+'\n\nPeriksa koneksi dan data Firebase sebelum mencoba kembali.');
     renderContent();
   }finally{
