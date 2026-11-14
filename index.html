@@ -259,6 +259,19 @@ const firebaseConfig = {
     html, body{ width:100% !important; min-height:0 !important; margin:0 !important; padding:0 !important; background:#fff !important; }
     body *{ visibility:hidden; }
     body input[type="checkbox"], body button, body .toolbar{ display:none !important; }
+    /* Kotak centang tabel (data-print-item/master) memakai !important di layar sehingga ikut tercetak
+       dan menutupi QR; di sini dipaksa hilang saat cetak. */
+    body .data-table input[type="checkbox"][data-print-item],
+    body .data-table input[type="checkbox"][data-print-master],
+    body input[type="checkbox"][data-print-item],
+    body input[type="checkbox"][data-print-master],
+    body input[type="checkbox"]{
+      display:none !important; visibility:hidden !important; position:absolute !important;
+      width:0 !important; height:0 !important; min-width:0 !important; margin:0 !important; padding:0 !important;
+      opacity:0 !important; pointer-events:none !important;
+    }
+    /* Halaman aplikasi disembunyikan total (bukan hanya transparan) agar tidak menghasilkan halaman kosong. */
+    body > #root{ display:none !important; }
     #printArea, #printArea *{ visibility:visible; }
     #printArea{ display:block !important; position:absolute; top:0; left:0; width:100%; margin:0; padding:0; }
     /* Label QR: empat kolom rapi pada kertas A4, tanpa kontrol pilihan ikut tercetak. */
