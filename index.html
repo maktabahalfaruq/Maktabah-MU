@@ -4990,7 +4990,7 @@ function handleScanResult(text){
   }
 
   if(mode==="member"){
-    const a=state.anggota.find(x=>String(x.nis||"").trim().toUpperCase()===normalized||String(x.id||"").trim().toUpperCase()===normalized);
+    const a=state.anggota.find(x=>String(x.id||"").trim().toUpperCase()===normalized)||state.anggota.find(x=>String(x.nis||"").trim().toUpperCase()===normalized);
     stopScan();
     if(!a){ showToast(`Kode anggota "${raw}" tidak ditemukan`,"rose"); return; }
     openMemberHistory(a.id); return;
@@ -4998,7 +4998,7 @@ function handleScanResult(text){
 
   if(mode==="loan-member"){
     // Tahap pertama menerima QR MEMBER maupun QR lama berisi NIS.
-    const a=state.anggota.find(x=>String(x.nis||"").trim().toUpperCase()===normalized||String(x.id||"").trim().toUpperCase()===normalized);
+    const a=state.anggota.find(x=>String(x.id||"").trim().toUpperCase()===normalized)||state.anggota.find(x=>String(x.nis||"").trim().toUpperCase()===normalized);
     if(!a){ showToast(`Kode anggota "${raw}" tidak ditemukan — pastikan QR kartu anggota yang dipindai.`,"rose"); return; }
 
     // Jangan matikan kamera dan jangan render ulang modal.
@@ -5132,7 +5132,13 @@ function bindScanConfirm(){
 
 /* ============ CETAK: LABEL QR ============ */
 function qrPayloadBook(kode){ return `BOOK|${String(kode||"").trim()}`; }
-function qrPayloadMember(nis,id){ return `MEMBER|${String(nis||id||"").trim()}`; }
+function qrPayloadMember(nis,id){
+  // Jika ada lebih dari satu anggota dengan NIS yang sama, QR memakai ID unik anggota
+  // supaya tidak salah mengenali anggota saat dipindai. NIS yang unik tetap seperti semula.
+  const n=String(nis||"").trim();
+  const dup=n && id && (Array.isArray(state.anggota)?state.anggota:[]).filter(x=>String(x.nis||"").trim()===n).length>1;
+  return `MEMBER|${dup?String(id).trim():String(nis||id||"").trim()}`;
+}
 function qrImageUrl(text, size){ return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=8&ecc=M&data=${encodeURIComponent(text)}`; }
 function decodeScanPayload(raw){
   const t=String(raw||"").trim();
