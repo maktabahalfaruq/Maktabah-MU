@@ -3336,6 +3336,14 @@ async function saveNewLoanToFirebase(loan){
   // berlangsung atomik. Ini mencegah dua perangkat meminjam buku yang sama
   // atau meminjamkan buku/anggota yang sudah tidak ada.
   const dataRef=db.ref(DATA_PATH);
+  // Status pengembalian disimpan pada cabang terpisah. Ambil status terbaru
+  // sebelum transaksi agar transaksi lama yang sudah dikembalikan tidak
+  // keliru dianggap masih aktif oleh validasi pada DATA_PATH.
+  const returnStatusSnap=await withTimeout(
+    db.ref(RETURN_STATUS_PATH).once("value"),12000,"Pemeriksaan status pengembalian buku"
+  );
+  const returnStatusMap=returnStatusSnap.val()||{};
+  const normalizeBookCode=value=>String(value||"").trim().toUpperCase();
   const result=await dataRef.transaction(current=>{
     const root={...(current||{})};
     const books=maktabahRows(root.books);
@@ -3344,10 +3352,16 @@ async function saveNewLoanToFirebase(loan){
     const deleted=new Set(maktabahRows(root.deletedLoanIds).map(row=>String(typeof row==='object'?row.id:row)));
     if(deleted.has(String(loan.id))) return;
     if(loans.some(row=>row && String(row.id)===String(loan.id))) return;
-    const book=books.find(row=>row && String(row.kode||'').toUpperCase()===String(loan.kodeBuku||'').toUpperCase());
+    const targetCode=normalizeBookCode(loan.kodeBuku);
+    const book=books.find(row=>row && normalizeBookCode(row.kode)===targetCode);
     if(!book || book.statusFisik!=="baik") return;
     if(!members.some(row=>row && String(row.id)===String(loan.anggotaId))) return;
-    if(loans.some(row=>row && String(row.kodeBuku||'').toUpperCase()===String(loan.kodeBuku||'').toUpperCase() && row.status==="dipinjam")) return;
+    const alreadyActive=loans.some(row=>{
+      if(!row || normalizeBookCode(row.kodeBuku)!==targetCode || row.status!=="dipinjam") return false;
+      const returned=returnStatusMap[String(row.id)];
+      return !(returned && returned.status==="dikembalikan");
+    });
+    if(alreadyActive) return;
     loans.unshift(loan);
     root.loans=loans;
     return root;
