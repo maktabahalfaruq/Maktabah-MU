@@ -1102,6 +1102,17 @@ function maktabahClone(value){
   if(value===undefined) return undefined;
   try{return JSON.parse(JSON.stringify(value));}catch(e){return value;}
 }
+function maktabahStable(v){
+  // JSON dengan urutan kunci tetap: Firebase mengembalikan kunci terurut abjad,
+  // sedangkan data lokal bisa berurutan lain. Tanpa ini, data yang SAMA dianggap
+  // "berubah" dan memicu konflik palsu.
+  const norm=x=>{
+    if(Array.isArray(x)) return x.map(norm);
+    if(x && typeof x==='object'){ const o={}; Object.keys(x).sort().forEach(k=>{o[k]=norm(x[k]);}); return o; }
+    return x;
+  };
+  return JSON.stringify(norm(v)===undefined?null:norm(v));
+}
 function maktabahRows(value){
   if(Array.isArray(value)) return value.filter(Boolean);
   if(value && typeof value==='object'){
@@ -1133,7 +1144,7 @@ function maktabahChangedFields(before,after){
   const changed={};
   const keys=new Set([...Object.keys(before||{}),...Object.keys(after||{})]);
   keys.forEach(key=>{
-    if(JSON.stringify((before||{})[key])!==JSON.stringify((after||{})[key])){
+    if(maktabahStable((before||{})[key])!==maktabahStable((after||{})[key])){
       if(Object.prototype.hasOwnProperty.call(after||{},key)) changed[key]=after[key];
       else changed[key]=null;
     }
@@ -1225,13 +1236,16 @@ async function savePrivateFirebase(){
   // Data utama dan pengaturan berada dalam satu transaksi pada parent private.
   // Status denda/pengembalian tetap berada pada cabang khusus yang dikelola
   // oleh aksi masing-masing, sehingga tidak tertimpa oleh penyimpanan koleksi.
-  const settingsPatch=isAdmin()?maktabahChangedFields(baseline.settings||{},state.settings||{}):{};
+  const settingsPatch=(isAdmin()&&baseline.settings&&Object.keys(baseline.settings).length)?maktabahChangedFields(baseline.settings,state.settings||{}):{};
   // Transaksi dipersempit ke cabang data saja (bukan seluruh cabang private) agar
   // payload kecil dan tidak terputus ("disconnect") di jaringan seluler.
   const privateRef=db.ref(DATA_PATH);
   let detectedConflicts=[];
   const tx=await privateRef.transaction(currentData=>{
     detectedConflicts=[];
+    // Putaran pertama transaksi bisa berisi null (cache belum lengkap). Kembalikan
+    // null (bukan undefined) agar Firebase mengulang dengan data server yang asli.
+    if((currentData===null||currentData===undefined) && maktabahServerBaseline && Array.isArray(maktabahServerBaseline.loans) && maktabahServerBaseline.loans.length) return null;
     const serverData={...(currentData||{})};
     const deleted=new Set([
       ...maktabahRows(serverData.deletedLoanIds).map(String),
@@ -1261,7 +1275,7 @@ async function savePrivateFirebase(){
           if(collection==='loans' && deletedLoanKeys.has(String(baseRow?.id))){serverMap.delete(key);return;}
           if(!localMap.has(key)){
             const remoteRow=serverMap.get(key);
-            if(remoteRow && JSON.stringify(remoteRow)!==JSON.stringify(baseRow)){
+            if(remoteRow && maktabahStable(remoteRow)!==maktabahStable(baseRow)){
               detectedConflicts.push(`${collection}:${key} (hapus vs perubahan perangkat lain)`);
             }else{
               serverMap.delete(key);
@@ -1284,7 +1298,7 @@ async function savePrivateFirebase(){
               const baseValue=baseRow?.[field];
               const remoteValue=remoteRow?.[field];
               const localValue=patch[field]===null?undefined:patch[field];
-              if(JSON.stringify(remoteValue)!==JSON.stringify(baseValue) && JSON.stringify(remoteValue)!==JSON.stringify(localValue)){
+              if(maktabahStable(remoteValue)!==maktabahStable(baseValue) && maktabahStable(remoteValue)!==maktabahStable(localValue)){
                 detectedConflicts.push(`${collection}:${key}.${field}`);
               }
             });
@@ -1308,13 +1322,14 @@ async function savePrivateFirebase(){
   if(isAdmin() && Object.keys(settingsPatch).length){
     const stx=await db.ref(SETTINGS_PATH).transaction(remoteSettings=>{
       detectedConflicts=[];
+      if((remoteSettings===null||remoteSettings===undefined) && baseline.settings && Object.keys(baseline.settings).length) return null;
       const baseSettings=baseline.settings||{};
       remoteSettings=remoteSettings||{};
       Object.keys(settingsPatch).forEach(field=>{
         const baseValue=baseSettings[field];
         const remoteValue=remoteSettings[field];
         const localValue=settingsPatch[field]===null?undefined:settingsPatch[field];
-        if(JSON.stringify(remoteValue)!==JSON.stringify(baseValue) && JSON.stringify(remoteValue)!==JSON.stringify(localValue)){
+        if(maktabahStable(remoteValue)!==maktabahStable(baseValue) && maktabahStable(remoteValue)!==maktabahStable(localValue)){
           detectedConflicts.push(`settings:${field}`);
         }
       });
@@ -1564,6 +1579,95 @@ async function saveReturnStatus(id, tanggalKembali, status="dikembalikan"){
   return saved;
 }
 
+
+/* ============ PERBAIKAN PENYIMPANAN: SATU SUMBER KEBENARAN ============ */
+// Status "dikembalikan" dan "denda lunas" sebelumnya hanya ditulis ke cabang
+// terpisah (returnStatus / fineStatus), sedangkan data transaksi di
+// private/data/loans tetap berstatus "dipinjam". Akibatnya validasi peminjaman
+// baru (yang membaca loans) menganggap buku masih dipinjam. Fungsi ini menyalin
+// status tersebut ke data transaksi sehingga keduanya selalu sama.
+async function reconcileLoanStatuses(){
+  if(!firebaseReady || !db || !currentUser) return false;
+  const rmap=window.__maktabahReturnStatusMap||{};
+  const fmap=window.__maktabahFineStatusMap||{};
+  if(!Object.keys(rmap).length && !Object.keys(fmap).length) return false;
+  let changedCount=0;
+  const tx=await db.ref(DATA_PATH).transaction(current=>{
+    if(current===null||current===undefined) return null;
+    const rows=maktabahRows(current.loans);
+    let changed=0;
+    const next=rows.map(l=>{
+      const key=String(l.id);
+      let n=l, touched=false;
+      const r=rmap[key];
+      if(r && r.status==='dikembalikan'){
+        if(n.status!=='dikembalikan' || (r.tanggalKembali && n.tanggalKembali!==r.tanggalKembali)){
+          n={...n,status:'dikembalikan',tanggalKembali:r.tanggalKembali||n.tanggalKembali||null}; touched=true;
+        }
+      }
+      if(Object.prototype.hasOwnProperty.call(fmap,key) && (n.dendaLunas===true)!==(fmap[key]===true)){
+        n={...n,dendaLunas:fmap[key]===true}; touched=true;
+      }
+      if(touched) changed++;
+      return n;
+    });
+    changedCount=changed;
+    if(!changed) return; // tidak ada yang perlu diperbaiki
+    return {...current,loans:next};
+  },undefined,false);
+  if(!tx || !tx.committed || !changedCount) return false;
+  const saved=tx.snapshot.val()||{};
+  const rows=maktabahRows(saved.loans);
+  const deleted=new Set(maktabahRows(saved.deletedLoanIds).map(String));
+  state.loans=rows.filter(l=>!deleted.has(String(l.id)));
+  if(maktabahServerBaseline) maktabahServerBaseline.loans=maktabahClone(rows);
+  applyFineStatusMap(fmap);
+  applyReturnStatusMap(rmap);
+  try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+  console.info('Status transaksi diselaraskan:',changedCount);
+  return true;
+}
+// Penghapusan transaksi memakai satu transaksi langsung pada data transaksi,
+// tidak lewat penyimpanan umum (yang ikut membandingkan pengaturan/koleksi lain
+// dan bisa memicu konflik palsu).
+async function deleteLoansFromFirebase(ids){
+  if(!firebaseReady || !db || !currentUser) throw new Error('Koneksi atau sesi Firebase belum siap. Penghapusan belum tersimpan.');
+  const idSet=new Set((ids||[]).map(String));
+  if(!idSet.size) return;
+  try{ await maktabahSaveQueue.catch(()=>{}); }catch(_){}
+  const tx=await db.ref(DATA_PATH).transaction(current=>{
+    if(current===null||current===undefined) return null;
+    const root={...current};
+    root.loans=maktabahRows(root.loans).filter(l=>!idSet.has(String(l.id)));
+    const dels=new Set(maktabahRows(root.deletedLoanIds).map(x=>String(typeof x==='object'?x.id:x)));
+    idSet.forEach(id=>dels.add(id));
+    root.deletedLoanIds=Array.from(dels);
+    return root;
+  },undefined,false);
+  if(!tx || !tx.committed) throw new Error('Firebase belum mengonfirmasi penghapusan. Periksa koneksi lalu coba lagi.');
+  const saved=tx.snapshot.val()||{};
+  const rows=maktabahRows(saved.loans);
+  if(rows.some(l=>idSet.has(String(l.id)))) throw new Error('Penghapusan belum terkonfirmasi di server.');
+  state.loans=rows;
+  state.deletedLoanIds=maktabahRows(saved.deletedLoanIds).map(String);
+  state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>!idSet.has(String(l.id)));
+  if(maktabahServerBaseline){
+    maktabahServerBaseline.loans=maktabahClone(rows);
+    maktabahServerBaseline.deletedLoanIds=maktabahClone(state.deletedLoanIds);
+  }
+  // Bersihkan catatan status terpisah milik transaksi yang dihapus (tidak fatal bila gagal).
+  for(const id of idSet){
+    try{ await db.ref(RETURN_STATUS_PATH+'/'+id).remove(); }catch(e){ console.warn('returnStatus tidak dibersihkan',e); }
+    try{ await db.ref(FINE_STATUS_PATH+'/'+id).remove(); }catch(e){ console.warn('fineStatus tidak dibersihkan',e); }
+    if(window.__maktabahReturnStatusMap) delete window.__maktabahReturnStatusMap[id];
+    if(window.__maktabahFineStatusMap) delete window.__maktabahFineStatusMap[id];
+  }
+  applyFineStatusMap(window.__maktabahFineStatusMap||{});
+  applyReturnStatusMap(window.__maktabahReturnStatusMap||{});
+  try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
+  Promise.resolve().then(()=>savePublicMirror()).catch(e=>console.warn('Mirror publik belum diperbarui',e));
+}
+
 async function loadPrivateData(){
   if(!firebaseReady || !currentUser) return false;
   try{
@@ -1641,7 +1745,9 @@ function bindPrivateRealtime(){
     if(maktabahSaveInFlight>0 || maktabahSavePending>0 || saveTimer!==null){ window.__maktabahRealtimeMissed=true; return; }
     const val=snap.val(); if(!val) return;
     applyPersisted(val);
-    maktabahServerBaseline=maktabahClone(val||{}); 
+    const keepSettingsBaseline=maktabahServerBaseline && maktabahServerBaseline.settings;
+    maktabahServerBaseline=maktabahClone(val||{});
+    if(keepSettingsBaseline) maktabahServerBaseline.settings=keepSettingsBaseline;
     applyFineStatusMap(window.__maktabahFineStatusMap || {});
     applyReturnStatusMap(window.__maktabahReturnStatusMap || {});
     state.privateDataReady=true;
@@ -1715,6 +1821,7 @@ async function loadData(){
 
         try{
           const privateDataLoaded=await loadPrivateData();
+          if(privateDataLoaded){ try{ await reconcileLoanStatuses(); }catch(e){ console.warn('Penyelarasan status transaksi tertunda',e); } }
           if(firebaseReady && db){
             if(privateDataLoaded) await savePublicMirror();
             bindPrivateRealtime();
@@ -3345,6 +3452,7 @@ async function saveNewLoanToFirebase(loan){
   const returnStatusMap=returnStatusSnap.val()||{};
   const normalizeBookCode=value=>String(value||"").trim().toUpperCase();
   const result=await dataRef.transaction(current=>{
+    if(current===null||current===undefined) return null; // paksa Firebase mengulang dengan data server asli
     const root={...(current||{})};
     const books=maktabahRows(root.books);
     const members=maktabahRows(root.anggota);
@@ -3358,6 +3466,7 @@ async function saveNewLoanToFirebase(loan){
     if(!members.some(row=>row && String(row.id)===String(loan.anggotaId))) return;
     const alreadyActive=loans.some(row=>{
       if(!row || normalizeBookCode(row.kodeBuku)!==targetCode || row.status!=="dipinjam") return false;
+      if(deleted.has(String(row.id))) return false;
       const returned=returnStatusMap[String(row.id)];
       return !(returned && returned.status==="dikembalikan");
     });
@@ -3456,17 +3565,19 @@ function bindHistoryModal(){
 }
 async function deleteHistoryLoan(id){
   if(!guardAdmin()) return;
+  if(window.__maktabahDeleteInProgress) return;
   const loan=state.loans.find(l=>String(l.id)===String(id));
   if(!loan){ showToast("Data riwayat sudah tidak ditemukan.","rose"); return; }
   if(!confirm(`Hapus riwayat peminjaman "${loan.judulBuku}" oleh ${loan.nama}? Data akan dihapus dari riwayat buku dan riwayat anggota.`)) return;
+  window.__maktabahDeleteInProgress=true;
   try{
-    await commitMaktabahMutation(()=>{
-      state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),String(id)]));
-      state.loans=state.loans.filter(l=>String(l.id)!==String(id));
-      state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>String(l.id)!==String(id));
-    },{success:"Riwayat peminjaman berhasil dihapus."});
+    await deleteLoansFromFirebase([id]);
+    showToast("Riwayat peminjaman berhasil dihapus.","plum");
     if(state.historyModal) renderModal(); else renderContent();
-  }catch(e){console.error("Penghapusan riwayat gagal",e);}
+  }catch(e){
+    console.error("Penghapusan riwayat gagal",e);
+    showToast("Gagal menghapus: "+(e?.message||"kesalahan tidak diketahui"),"rose");
+  }finally{window.__maktabahDeleteInProgress=false;}
 }
 
 function loanListHTML(list, showLunas){
@@ -3514,6 +3625,7 @@ async function returnLoan(id){
   clearTimeout(saveTimer); saveTimer=null;
   try{
     await saveReturnStatus(l.id,returnedAt);
+    try{ await reconcileLoanStatuses(); }catch(e){ console.warn('Penyelarasan status tertunda',e); }
     state.loans=state.loans.map(x=>String(x.id)===String(id)?{...x,status:"dikembalikan",tanggalKembali:returnedAt}:x);
     try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
     showToast(`"${l.judulBuku}" berhasil dikembalikan dan tersimpan`,"plum");
@@ -3723,8 +3835,14 @@ async function deleteLoan(id){
   const l=state.loans.find(x=>String(x.id)===String(id)); if(!l) return;
   if(!confirm(`Hapus transaksi peminjaman "${l.judulBuku}" oleh ${l.nama}? Data ini juga akan dihapus dari riwayat buku dan riwayat anggota.`)) return;
   window.__maktabahDeleteInProgress=true;
-  try{await commitMaktabahMutation(()=>{state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),String(id)]));state.loans=state.loans.filter(x=>String(x.id)!==String(id));state.riwayatLoans=(state.riwayatLoans||[]).filter(x=>String(x.id)!==String(id));},{success:"Transaksi dan riwayatnya berhasil dihapus."});}
-  catch(e){console.error("Gagal menyimpan penghapusan transaksi",e);}
+  try{
+    await deleteLoansFromFirebase([id]);
+    renderContent();
+    showToast("Transaksi dan riwayatnya berhasil dihapus.","plum");
+  }catch(e){
+    console.error("Gagal menyimpan penghapusan transaksi",e);
+    showToast("Gagal menghapus: "+(e?.message||"kesalahan tidak diketahui"),"rose");
+  }
   finally{window.__maktabahDeleteInProgress=false;}
 }
 async function clearHistoryLoans(){
@@ -3733,9 +3851,14 @@ async function clearHistoryLoans(){
   if(!hist.length){showToast("Tidak ada riwayat untuk dihapus","rose");return;}
   if(!confirm(`Hapus semua ${hist.length} riwayat pengembalian? Catatan denda terkait juga akan hilang. Tindakan ini tidak bisa dibatalkan.`)) return;
   window.__maktabahDeleteInProgress=true;
-  const histIds=new Set(hist.map(l=>String(l.id)));
-  try{await commitMaktabahMutation(()=>{state.deletedLoanIds=Array.from(new Set([...(state.deletedLoanIds||[]).map(String),...histIds]));state.loans=state.loans.filter(l=>!histIds.has(String(l.id)));state.riwayatLoans=(state.riwayatLoans||[]).filter(l=>!histIds.has(String(l.id)));},{success:"Riwayat pengembalian berhasil dihapus."});}
-  catch(e){console.error("Gagal menyimpan penghapusan riwayat",e);}
+  try{
+    await deleteLoansFromFirebase(hist.map(l=>String(l.id)));
+    renderContent();
+    showToast("Riwayat pengembalian berhasil dihapus.","plum");
+  }catch(e){
+    console.error("Gagal menyimpan penghapusan riwayat",e);
+    showToast("Gagal menghapus: "+(e?.message||"kesalahan tidak diketahui"),"rose");
+  }
   finally{window.__maktabahDeleteInProgress=false;}
 }
 
@@ -5120,6 +5243,7 @@ function bindScanConfirm(){
       const returnedAt=iso(todayDate);
       // Server dikonfirmasi terlebih dahulu. UI dan cache baru berubah sesudahnya.
       await saveReturnStatus(targetId,returnedAt);
+      try{ await reconcileLoanStatuses(); }catch(e){ console.warn('Penyelarasan status tertunda',e); }
       state.loans=state.loans.map(row=>String(row.id)===targetId?{...row,status:"dikembalikan",tanggalKembali:returnedAt}:row);
       try{localStorage.setItem(STORAGE_KEY,persistPayload());}catch(e){}
       // Tutup konfirmasi begitu node transaksi sudah terverifikasi tersimpan.
