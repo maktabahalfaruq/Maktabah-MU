@@ -669,6 +669,164 @@ svg[width]{display:inline-block;flex:0 0 auto}
   .public-footer-actions button{padding:8px 11px;font-size:10.5px;}
 }
 </style>
+<style id="dashboard-redesign">
+/* ===== Dashboard redesign — semua selector di bawah .dx agar halaman lain tidak terpengaruh ===== */
+.dx{
+  --dx-green:#1E3227; --dx-green-2:#33513F; --dx-olive:#6B7A4A; --dx-olive-soft:#EEF0E2;
+  --dx-cream:#F1E6CE; --dx-ivory:#FBF6EC; --dx-white:#FFFDF8; --dx-brown:#5C4223; --dx-gray:#7A7062;
+  --dx-line:#E7DCC4; --dx-ink:#2B2013;
+  --dx-red:#B3382C; --dx-red-bg:#FBEAE6; --dx-orange:#C2661F; --dx-orange-bg:#FCEBDA;
+  --dx-yellow:#8F6A06; --dx-yellow-bg:#FBF2CF; --dx-green-ok:#3B7345; --dx-green-ok-bg:#E5F0E2;
+  --dx-shadow:0 1px 2px rgba(43,32,19,.04),0 2px 8px rgba(43,32,19,.04);
+  display:flex; flex-direction:column; gap:20px; min-width:0; color:var(--dx-ink);
+}
+.dx *{ min-width:0; }
+.dx h2,.dx h3,.dx p,.dx ol,.dx ul{ margin:0; padding:0; }
+.dx ol,.dx ul{ list-style:none; }
+.dx svg{ flex:none; }
+.dx-sr{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+
+/* Welcome & search */
+.dx-welcome{ display:flex; align-items:center; justify-content:space-between; gap:20px 32px; flex-wrap:wrap; background:var(--dx-white); border:1px solid var(--dx-line); border-radius:16px; padding:24px 26px; box-shadow:var(--dx-shadow); }
+.dx-welcome-text{ flex:1 1 280px; }
+.dx-eyebrow{ font-family:var(--mono); font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--dx-olive); font-weight:600; margin-bottom:6px !important; }
+.dx-title{ font-family:var(--display); font-size:clamp(22px,2.6vw,28px); font-weight:600; line-height:1.2; color:var(--dx-green); }
+.dx-sub{ margin-top:6px !important; font-size:13.5px; line-height:1.55; color:var(--dx-gray); max-width:46ch; }
+.dx-search{ flex:1 1 340px; max-width:480px; display:flex; align-items:center; gap:8px; background:var(--dx-ivory); border:1px solid var(--dx-line); border-radius:14px; padding:6px 6px 6px 14px; }
+.dx-search:focus-within{ border-color:var(--dx-green-2); box-shadow:0 0 0 3px rgba(51,81,63,.12); }
+.dx-search-ico{ color:var(--dx-gray); display:flex; }
+.dx-search input{ flex:1; border:none !important; outline:none !important; background:transparent; font-size:14px; padding:10px 4px; font-family:var(--body); color:var(--dx-ink); }
+.dx-search button{ border:none; background:var(--dx-green-2); color:#fff; font-weight:700; font-size:13.5px; padding:11px 20px; border-radius:10px; cursor:pointer; min-height:44px; transition:background .15s; }
+.dx-search button:hover{ background:var(--dx-green); }
+
+/* Quick actions */
+.dx-quick{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
+.dx-quick-tile{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; min-height:96px; padding:14px 8px; background:var(--dx-white); border:1px solid var(--dx-line) !important; border-radius:14px !important; box-shadow:var(--dx-shadow); cursor:pointer; font-family:var(--body); transition:border-color .15s, box-shadow .15s, transform .12s; }
+.dx-quick-tile:hover{ border-color:var(--dx-olive) !important; box-shadow:0 4px 14px rgba(43,32,19,.07); transform:translateY(-1px); }
+.dx-quick-tile:active{ transform:scale(.97); }
+.dx-quick-ico{ width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center; background:var(--dx-olive-soft); color:var(--dx-green-2); }
+.dx-quick-label{ font-size:12.5px; font-weight:600; color:var(--dx-ink); text-align:center; line-height:1.25; }
+
+/* Stats */
+.dx-stats{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
+.dx-stat{ background:var(--dx-white); border:1px solid var(--dx-line); border-radius:14px; padding:16px; box-shadow:var(--dx-shadow); display:flex; flex-direction:column; gap:12px; justify-content:space-between; }
+.dx-stat-top{ display:flex; align-items:flex-start; gap:8px; }
+.dx-stat-ico{ width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; flex:none; }
+.dx-stat-label{ font-size:12px; line-height:1.3; color:var(--dx-gray); font-weight:500; padding-top:2px; }
+.dx-stat-value{ font-family:var(--display); font-size:clamp(24px,2.4vw,30px); font-weight:600; line-height:1; color:var(--dx-green); overflow-wrap:anywhere; }
+.dx-tone-green .dx-stat-ico{ background:#E4EBE5; color:var(--dx-green-2); }
+.dx-tone-olive .dx-stat-ico{ background:var(--dx-olive-soft); color:var(--dx-olive); }
+.dx-tone-brown .dx-stat-ico{ background:var(--dx-cream); color:var(--dx-brown); }
+.dx-tone-red .dx-stat-ico{ background:var(--dx-red-bg); color:var(--dx-red); }
+.dx-tone-red .dx-stat-value{ color:var(--dx-brown); }
+
+/* Overdue alert */
+.dx-alert{ display:flex; align-items:center; gap:10px; background:var(--dx-red-bg); border:1px solid #EFC9C2; border-left:3px solid var(--dx-red); color:#7E2A21; border-radius:12px; padding:11px 14px; font-size:13px; line-height:1.45; }
+.dx-alert-ico{ display:flex; color:var(--dx-red); }
+
+/* Cards */
+.dx-card{ background:var(--dx-white); border:1px solid var(--dx-line); border-radius:16px; padding:20px; box-shadow:var(--dx-shadow); }
+.dx-card-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+.dx-card-title{ font-family:var(--display); font-size:17px; font-weight:600; color:var(--dx-green); }
+.dx-hint{ font-size:12px; color:var(--dx-gray); margin-top:3px !important; }
+.dx-empty{ font-size:13px; color:var(--dx-gray); padding:18px 0; }
+
+/* Reminder */
+.dx-chips{ display:flex; gap:6px; flex-wrap:wrap; }
+.dx-chip,.dx-badge{ display:inline-flex; align-items:center; font-size:11.5px; font-weight:700; padding:4px 10px; border-radius:999px; white-space:nowrap; }
+.is-late.dx-chip,.is-late.dx-badge{ background:var(--dx-red-bg); color:var(--dx-red); }
+.is-today.dx-chip,.is-today.dx-badge{ background:var(--dx-orange-bg); color:var(--dx-orange); }
+.is-soon.dx-chip,.is-soon.dx-badge{ background:var(--dx-yellow-bg); color:var(--dx-yellow); }
+.is-done.dx-chip,.is-done.dx-badge{ background:var(--dx-green-ok-bg); color:var(--dx-green-ok); }
+.dx-legend{ display:flex; align-items:center; gap:6px 8px; flex-wrap:wrap; font-size:11.5px; color:var(--dx-gray); margin-bottom:12px; }
+.dx-legend .dx-dot{ margin-left:8px; }
+.dx-legend .dx-dot:first-child{ margin-left:0; }
+.dx-dot{ width:8px; height:8px; border-radius:50%; display:inline-block; }
+.dx-dot.is-late{ background:var(--dx-red); } .dx-dot.is-today{ background:var(--dx-orange); } .dx-dot.is-soon{ background:#D4A514; } .dx-dot.is-done{ background:var(--dx-green-ok); }
+.dx-table-wrap{ border:1px solid var(--dx-line); border-radius:12px; overflow:hidden; }
+.dx-table{ width:100%; border-collapse:collapse; font-size:13px; }
+.dx-table th{ text-align:left; font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--dx-gray); background:var(--dx-ivory); padding:10px 14px; border-bottom:1px solid var(--dx-line); white-space:nowrap; }
+.dx-table td{ padding:12px 14px; border-bottom:1px solid #EFE6D2; vertical-align:middle; line-height:1.4; }
+.dx-table tr:last-child td{ border-bottom:none; }
+.dx-row td:first-child{ box-shadow:inset 3px 0 0 transparent; }
+.dx-row.is-late td:first-child{ box-shadow:inset 3px 0 0 var(--dx-red); }
+.dx-row.is-today td:first-child{ box-shadow:inset 3px 0 0 var(--dx-orange); }
+.dx-row.is-soon td:first-child{ box-shadow:inset 3px 0 0 #D4A514; }
+.dx-row.is-done td:first-child{ box-shadow:inset 3px 0 0 var(--dx-green-ok); }
+.dx-c-name b{ font-weight:600; color:var(--dx-ink); }
+.dx-c-name .dx-hint{ margin-top:2px !important; }
+.dx-c-book{ max-width:260px; }
+.dx-c-act{ text-align:right; white-space:nowrap; }
+.dx-wa{ display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:36px; padding:0 14px; border-radius:10px; font-size:12.5px; font-weight:700; text-decoration:none; background:var(--dx-green-2); color:#fff; border:none; cursor:pointer; font-family:var(--body); transition:background .15s; }
+.dx-wa:hover{ background:var(--dx-green); }
+.dx-wa.is-off{ background:#ECE5D6 !important; color:#9A8F7C !important; cursor:not-allowed; }
+
+/* Analytics */
+.dx-analytics{ display:grid; grid-template-columns:minmax(0,1.3fr) minmax(0,1fr); gap:16px; }
+.dx-chart{ display:flex; align-items:stretch; gap:10px; height:210px; }
+.dx-chart-col{ flex:1; display:flex; flex-direction:column; align-items:center; }
+.dx-chart-val{ font-family:var(--mono); font-size:11.5px; color:var(--dx-gray); margin-bottom:6px; height:16px; }
+.dx-chart-track{ flex:1; width:100%; display:flex; align-items:flex-end; justify-content:center; border-bottom:1px solid var(--dx-line); }
+.dx-chart-bar{ width:100%; max-width:34px; background:var(--dx-green-2); border-radius:6px 6px 0 0; }
+.dx-chart-bar.is-pengurus{ background:var(--dx-olive); }
+.dx-chart-lbl{ font-size:11.5px; color:var(--dx-gray); font-weight:600; margin-top:8px; text-align:center; white-space:nowrap; }
+.dx-rank{ display:flex; flex-direction:column; gap:14px; }
+.dx-rank-item{ display:flex; align-items:center; gap:12px; }
+.dx-rank-no{ width:26px; height:26px; border-radius:8px; background:var(--dx-cream); color:var(--dx-brown); font-family:var(--display); font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; flex:none; }
+.dx-rank-item:first-child .dx-rank-no{ background:var(--dx-green-2); color:#fff; }
+.dx-rank-main{ flex:1; }
+.dx-rank-title{ font-size:13px; font-weight:600; line-height:1.35; overflow-wrap:anywhere; }
+.dx-rank-bar{ height:4px; background:#EFE6D2; border-radius:4px; margin-top:6px; overflow:hidden; }
+.dx-rank-bar span{ display:block; height:100%; background:var(--dx-olive); border-radius:4px; }
+.dx-rank-count{ font-family:var(--mono); font-size:12.5px; color:var(--dx-gray); font-weight:600; }
+
+/* Activity */
+.dx-activity-item{ display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid #EFE6D2; font-size:13px; }
+.dx-activity-item:last-child{ border-bottom:none; padding-bottom:0; }
+.dx-activity-item:first-child{ padding-top:0; }
+.dx-activity-ico{ width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex:none; }
+.dx-activity-ico.is-out{ background:var(--dx-cream); color:var(--dx-brown); }
+.dx-activity-ico.is-in{ background:var(--dx-olive-soft); color:var(--dx-olive); }
+.dx-activity-text{ flex:1; line-height:1.4; overflow-wrap:anywhere; }
+.dx-activity-time{ font-size:12px; color:var(--dx-gray); white-space:nowrap; }
+
+/* Tablet */
+@media (max-width:1060px){
+  .dx-stats{ grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .dx-analytics{ grid-template-columns:1fr; }
+}
+/* Mobile */
+@media (max-width:720px){
+  .dx{ gap:16px; }
+  .dx-welcome{ padding:18px; }
+  .dx-search{ flex-basis:100%; max-width:none; }
+  .dx-quick{ grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+  .dx-quick-tile{ min-height:92px; }
+  .dx-stats{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .dx-stat{ padding:14px; }
+  .dx-card{ padding:16px; }
+  .dx-table-wrap{ border:none; border-radius:0; overflow:visible; }
+  .dx-table,.dx-table tbody{ display:block; }
+  .dx-table thead{ display:none; }
+  .dx-table tr{ display:grid; grid-template-columns:1fr; gap:0; border:1px solid var(--dx-line); border-radius:14px; margin-bottom:10px; padding:12px 14px 14px; background:var(--dx-white); position:relative; overflow:hidden; }
+  .dx-table tr:last-child{ margin-bottom:0; }
+  .dx-table td{ display:flex; justify-content:space-between; align-items:center; gap:14px; padding:7px 0; border-bottom:1px dashed #EFE6D2; text-align:right; font-size:13.5px; }
+  .dx-table td::before{ content:attr(data-label); font-size:11.5px; font-weight:600; color:var(--dx-gray); text-transform:uppercase; letter-spacing:.04em; text-align:left; flex:none; }
+  .dx-table td.dx-c-name{ display:block; text-align:left; border-bottom:1px solid var(--dx-line); padding:0 0 10px; margin-bottom:4px; font-size:15px; }
+  .dx-table td.dx-c-name::before{ content:none; }
+  .dx-c-book{ max-width:none; }
+  .dx-table td.dx-c-act{ border-bottom:none; padding:12px 0 0; display:block; text-align:left; }
+  .dx-table td.dx-c-act::before{ content:none; }
+  .dx-row td:first-child,.dx-row.is-late td:first-child,.dx-row.is-today td:first-child,.dx-row.is-soon td:first-child,.dx-row.is-done td:first-child{ box-shadow:none; }
+  .dx-row::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:transparent; }
+  .dx-row.is-late::before{ background:var(--dx-red); } .dx-row.is-today::before{ background:var(--dx-orange); } .dx-row.is-soon::before{ background:#D4A514; } .dx-row.is-done::before{ background:var(--dx-green-ok); }
+  .dx-wa{ width:100%; min-height:44px; font-size:14px; }
+  .dx-chart{ height:190px; gap:6px; }
+  .dx-activity-item{ flex-wrap:wrap; }
+  .dx-activity-time{ flex-basis:100%; padding-left:42px; margin-top:-6px; }
+}
+</style>
+
 </head>
 <body>
 <div id="root"></div>
@@ -2559,8 +2717,152 @@ function bindPublicGuideStepper(){
   paint();
 }
 
-/* ============ DASHBOARD ============ */
+/* ============ DASHBOARD (redesign tampilan — Premium Hybrid Minimalist) ============
+   Data & sumber tetap sama dengan versi sebelumnya (lihat dashboardHTMLLegacy).
+   Hanya markup presentasi + CSS ber-prefix .dx yang berubah. */
 function dashboardHTML(){
+  const al=activeLoans(); const overdueCount=al.filter(isOverdue).length;
+  const returnedThisMonth = state.loans.filter(l=>l.tanggalKembali && new Date(l.tanggalKembali).getMonth()===todayDate.getMonth() && new Date(l.tanggalKembali).getFullYear()===todayDate.getFullYear()).length;
+  const totalDenda = state.loans.filter(l=>!l.dendaLunas && dendaLoan(l)>0).reduce((s,l)=>s+dendaLoan(l),0);
+  const rusakHilang = state.books.filter(b=>b.statusFisik!=="baik").length;
+  const cachedStats=(!state.privateDataReady && state.publicStats && typeof state.publicStats==="object")?state.publicStats:null;
+  const displayMembers=cachedStats ? (cachedStats.totalMembers ?? "…") : state.anggota.length;
+  const displayActive=cachedStats ? (cachedStats.activeLoans ?? "…") : al.length;
+  const displayReturned=cachedStats ? (cachedStats.returnedThisMonth ?? "…") : returnedThisMonth;
+  const displayFines=cachedStats ? (cachedStats.unpaidFines ?? "…") : totalDenda;
+  const displayLost=cachedStats ? (cachedStats.lostDamaged ?? "…") : rusakHilang;
+
+  const perKelasMap={};
+  const anggotaLookup=new Map((state.anggota||[]).map(a=>[String(a.id||""),a]));
+  state.loans.forEach(l=>{
+    const anggota=anggotaLookup.get(String(l.anggotaId||""));
+    const rawKelas=String(l.kelas||anggota?.kelas||"").trim();
+    if(rawKelas){
+      const key=rawKelas.toLowerCase()==="pengurus"?"Pengurus":rawKelas;
+      perKelasMap[key]=(perKelasMap[key]||0)+1;
+    }
+  });
+  const perKelas = cachedStats?.perClass?.length ? cachedStats.perClass : Object.entries(perKelasMap).map(([kelas,jumlah])=>({kelas,jumlah})).sort((a,b)=>a.kelas.localeCompare(b.kelas));
+  const jumlahPengurus = perKelas.filter(p=>String(p.kelas||"").trim().toLowerCase()==="pengurus").reduce((n,p)=>n+(Number(p.jumlah)||0),0);
+  const perKelasDiagram = [
+    ...perKelas.filter(p=>String(p.kelas||"").trim().toLowerCase()!=="pengurus"),
+    {kelas:"Pengurus",jumlah:jumlahPengurus}
+  ];
+  const maxJumlah = Math.max(1, ...perKelasDiagram.map(p=>Number(p.jumlah)||0));
+
+  const topMap={}; state.loans.forEach(l=>{ topMap[l.judulBuku]=(topMap[l.judulBuku]||0)+1; });
+  const topBuku = cachedStats?.topBooks?.length ? cachedStats.topBooks : Object.entries(topMap).map(([judul,jumlah])=>({judul,jumlah})).sort((a,b)=>b.jumlah-a.jumlah).slice(0,5);
+  const maxTop = Math.max(1, ...topBuku.map(b=>Number(b.jumlah)||0));
+
+  const events=[];
+  state.loans.forEach(l=>{ events.push({type:"pinjam",nama:l.nama,judul:l.judulBuku,tanggal:l.tanggalPinjam}); if(l.tanggalKembali) events.push({type:"kembali",nama:l.nama,judul:l.judulBuku,tanggal:l.tanggalKembali}); });
+  events.sort((a,b)=>new Date(b.tanggal)-new Date(a.tanggal));
+  const recent=events.slice(0,6);
+
+  let sapaan="Petugas";
+  try{ sapaan = (typeof currentUser!=="undefined" && currentUser && currentUser.displayName) ? currentUser.displayName : (isAdmin()?"Admin":"Petugas"); }catch(e){}
+
+  return `<div class="dx">
+    <section class="dx-welcome">
+      <div class="dx-welcome-text">
+        <p class="dx-eyebrow">Dashboard</p>
+        <h2 class="dx-title">Selamat datang, ${esc(sapaan)}</h2>
+        <p class="dx-sub">Jelajahi koleksi dan layanan maktabah. Cari judul, penyusun, atau kode buku langsung dari sini.</p>
+      </div>
+      <div class="dx-search">
+        <span class="dx-search-ico">${icon("search",16)}</span>
+        <input id="heroSearchInput" placeholder="Cari judul, penyusun, atau kode buku…" aria-label="Cari buku"/>
+        <button id="heroSearchBtn" type="button">Cari</button>
+      </div>
+    </section>
+
+    <section class="dx-quick" aria-label="Menu cepat">
+      ${dxQuick(icon("bookOpen",20),"Pinjamkan","transaksi","peminjaman")}
+      ${dxQuick(icon("rotateCcw",20),"Pengembalian","transaksi","pengembalian")}
+      ${dxQuick(icon("library",20),"Katalog Buku","cari","buku")}
+      ${dxQuick(icon("users",20),"Data Anggota","master","anggota")}
+      ${dxQuick(icon("chartColumn",20),"Laporan","laporan",null)}
+      ${dxQuick(icon("printer",20),"Cetak Label","cetak","label")}
+    </section>
+
+    <section class="dx-stats" aria-label="Statistik">
+      ${dxStat("Total Koleksi", cachedStats?.collection ?? state.books.length, "green", icon("libraryBig",16))}
+      ${dxStat("Total Anggota", displayMembers, "olive", icon("users",16))}
+      ${dxStat("Sedang Dipinjam", displayActive, "brown", icon("clock3",16))}
+      ${dxStat("Dikembalikan Bulan Ini", displayReturned, "olive", icon("check",16))}
+      ${dxStat("Total Denda Belum Lunas", rupiah(displayFines), "red", "Rp")}
+      ${dxStat("Buku Hilang/Rusak", displayLost, "brown", icon("alertTriangle",16))}
+    </section>
+
+    ${overdueCount>0 ? `<div class="dx-alert" role="alert"><span class="dx-alert-ico">${icon("alertTriangle",16)}</span><span><b>${overdueCount} peminjaman</b> sudah melewati jatuh tempo — cek Transaksi ▸ Pengembalian.</span></div>` : ""}
+
+    ${dxPengingat()}
+
+    <section class="dx-analytics">
+      <div class="dx-card">
+        <div class="dx-card-head"><h3 class="dx-card-title">Peminjaman per Kelas</h3></div>
+        ${perKelasDiagram.length===0 ? `<div class="dx-empty">Belum ada data.</div>` : `<div class="dx-chart">${perKelasDiagram.map(p=>{
+          const isPengurus=String(p.kelas||"").trim().toLowerCase()==="pengurus";
+          const h=Math.max(6,((Number(p.jumlah)||0)/maxJumlah)*100);
+          return `<div class="dx-chart-col"><div class="dx-chart-val">${p.jumlah}</div><div class="dx-chart-track"><div class="dx-chart-bar${isPengurus?' is-pengurus':''}" style="height:${h}%"></div></div><div class="dx-chart-lbl">${isPengurus?'Pengurus':`Kls ${esc(p.kelas)}`}</div></div>`;
+        }).join("")}</div>`}
+      </div>
+      <div class="dx-card">
+        <div class="dx-card-head"><h3 class="dx-card-title">Buku Terpopuler</h3></div>
+        ${topBuku.length===0 ? `<div class="dx-empty">Belum ada data.</div>` : `<ol class="dx-rank">${topBuku.map((b,i)=>`
+          <li class="dx-rank-item"><span class="dx-rank-no">${i+1}</span><div class="dx-rank-main"><div class="dx-rank-title">${esc(b.judul)}</div><div class="dx-rank-bar"><span style="width:${Math.max(6,((Number(b.jumlah)||0)/maxTop)*100)}%"></span></div></div><span class="dx-rank-count">${b.jumlah}×</span></li>
+        `).join("")}</ol>`}
+      </div>
+    </section>
+
+    <section class="dx-card">
+      <div class="dx-card-head"><h3 class="dx-card-title">Aktivitas Terbaru</h3></div>
+      ${recent.length===0 ? `<div class="dx-empty">Belum ada aktivitas.</div>` : `<ul class="dx-activity">${recent.map(e=>`
+        <li class="dx-activity-item"><span class="dx-activity-ico ${e.type==='pinjam'?'is-out':'is-in'}">${e.type==='pinjam'?icon("bookOpen",15):icon("rotateCcw",15)}</span><span class="dx-activity-text"><b>${esc(e.nama)}</b> ${e.type==='pinjam'?'meminjam':'mengembalikan'} <i>${esc(e.judul)}</i></span><span class="dx-activity-time">${fmt(e.tanggal)}</span></li>
+      `).join("")}</ul>`}
+    </section>
+  </div>`;
+}
+function dxStat(label,value,tone,ico){
+  return `<div class="dx-stat dx-tone-${tone}"><div class="dx-stat-top"><span class="dx-stat-ico">${ico}</span><span class="dx-stat-label">${label}</span></div><div class="dx-stat-value">${value}</div></div>`;
+}
+function dxQuick(ico,label,group,sub){
+  return `<button type="button" class="dx-quick-tile" data-goto="${group}" data-gotosub="${sub||''}"><span class="dx-quick-ico">${ico}</span><span class="dx-quick-label">${label}</span></button>`;
+}
+function dxPengingat(){
+  const rows = activeLoans().filter(l=>{ const d=daysUntilDue(l); return d!==null && d<=3; });
+  const legend = `<div class="dx-legend"><span class="dx-dot is-late"></span>Terlambat<span class="dx-dot is-today"></span>Hari ini<span class="dx-dot is-soon"></span>Mendekati<span class="dx-dot is-done"></span>Dikembalikan</div>`;
+  if(!rows.length) return `<section class="dx-card dx-reminder"><div class="dx-card-head"><div><h3 class="dx-card-title">Pengingat Pengembalian</h3><p class="dx-hint">Belum ada buku yang jatuh tempo dalam 3 hari ke depan.</p></div></div>${legend}</section>`;
+  const overdue=rows.filter(l=>daysUntilDue(l)<0).length;
+  const today=rows.filter(l=>daysUntilDue(l)===0).length;
+  const soon=rows.filter(l=>daysUntilDue(l)>0).length;
+  const waIco='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 21l2.1-5.3A8.5 8.5 0 1 1 21 11.5z"/></svg>';
+  return `<section class="dx-card dx-reminder">
+    <div class="dx-card-head">
+      <div><h3 class="dx-card-title">Pengingat Pengembalian</h3><p class="dx-hint">Menampilkan buku H-3 sampai yang sudah terlambat.</p></div>
+      <div class="dx-chips">
+        ${overdue?`<span class="dx-chip is-late">${overdue} terlambat</span>`:""}
+        ${today?`<span class="dx-chip is-today">${today} jatuh tempo hari ini</span>`:""}
+        ${soon?`<span class="dx-chip is-soon">${soon} akan jatuh tempo</span>`:""}
+      </div>
+    </div>
+    ${legend}
+    <div class="dx-table-wrap"><table class="dx-table"><thead><tr><th>Santri</th><th>Buku</th><th>Jatuh Tempo</th><th>Status</th><th>Wali</th><th><span class="dx-sr">Aksi</span></th></tr></thead><tbody>
+      ${rows.map(l=>{
+        const d=daysUntilDue(l);
+        const ang=anggotaById(l.anggotaId)||{};
+        const wa=whatsappReminderUrl(l);
+        const returned=!!(l.tanggalKembali || l.status==="dikembalikan");
+        const tone=returned?"done":d<0?"late":d===0?"today":"soon";
+        const status=returned?`<span class="dx-badge is-done">Dikembalikan</span>`:d<0?`<span class="dx-badge is-late">Terlambat ${Math.abs(d)} hari</span>`:d===0?`<span class="dx-badge is-today">Hari ini</span>`:`<span class="dx-badge is-soon">H-${d}</span>`;
+        return `<tr class="dx-row is-${tone}"><td data-label="Santri" class="dx-c-name"><b>${esc(l.nama)}</b><div class="dx-hint">Kelas ${esc(l.kelas||ang.kelas||"-")}</div></td><td data-label="Buku" class="dx-c-book">${esc(l.judulBuku)}</td><td data-label="Jatuh Tempo">${fmt(l.tanggalJatuhTempo)}</td><td data-label="Status">${status}</td><td data-label="Wali">${esc(ang.namaWali||"Belum diisi")}</td><td class="dx-c-act">${wa?`<a class="dx-wa" href="${wa}" target="_blank" rel="noopener">${waIco} WA Wali</a>`:`<button class="dx-wa is-off" disabled>${waIco} No. WA</button>`}</td></tr>`;
+      }).join("")}
+    </tbody></table></div>
+  </section>`;
+}
+
+/* ============ DASHBOARD (versi lama, dipertahankan untuk Laporan ▸ Statistik) ============ */
+function dashboardHTMLLegacy(){
   const al=activeLoans(); const overdueCount=al.filter(isOverdue).length;
   const returnedThisMonth = state.loans.filter(l=>l.tanggalKembali && new Date(l.tanggalKembali).getMonth()===todayDate.getMonth() && new Date(l.tanggalKembali).getFullYear()===todayDate.getFullYear()).length;
   const totalDenda = state.loans.filter(l=>!l.dendaLunas && dendaLoan(l)>0).reduce((s,l)=>s+dendaLoan(l),0);
@@ -3967,7 +4269,7 @@ function laporanHTML(){
   }else if(s==="literasi"){
     body = tableWrap(["Nama","Kelas","Buku Dibaca","Target"], state.anggota.map(a=>[a.nama,a.kelas,bacaanAnggota(a.id).length,(state.targetLiterasi.find(t=>t.kelas===a.kelas)||{target:0}).target]));
   }else if(s==="statistik"){
-    return dashboardHTML();
+    return dashboardHTMLLegacy();
   }
   return rangeBar + body;
 }
