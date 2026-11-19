@@ -809,6 +809,35 @@ svg[width]{display:inline-block;flex:0 0 auto}
   .dx-activity-item{ flex-wrap:wrap; }
   .dx-activity-time{ flex-basis:100%; padding-left:26px; margin-top:-4px; }
 }
+
+/* ===== Penyelarasan tata letak: gaya FAIISA ===== */
+.dx-pagehead{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.dx-pagehead h2{ font-family:var(--body); font-size:24px; font-weight:700; color:var(--dx-green); }
+.dx-pagehead span{ font-size:13px; color:var(--dx-gray); }
+.dx-welcome{ padding:22px 24px; }
+.dx-title{ font-size:clamp(17px,2.2vw,21px); font-weight:700; line-height:1.3; }
+.dx-sub{ font-size:12.5px; }
+.dx-search{ background:transparent !important; border:none !important; box-shadow:none !important; padding:0; gap:8px; max-width:520px; margin-top:14px; }
+.dx-search-ico{ display:none; }
+.dx-search input{ flex:1; border:1px solid var(--dx-line) !important; background:var(--dx-ivory); border-radius:10px; padding:0 14px; min-height:42px; font-size:14px; }
+.dx-search input:focus{ border-color:var(--dx-green-2) !important; box-shadow:0 0 0 3px rgba(51,81,63,.12); }
+.dx-search button{ background:var(--dx-gold); color:var(--dx-green); border-radius:10px; min-height:42px; padding:0 22px; }
+.dx-search button:hover{ background:#B8861F; }
+.dx-quick{ gap:12px; }
+.dx-quick-tile{ min-height:104px; gap:10px; }
+.dx-quick-ico{ width:46px; height:46px; border-radius:13px; }
+.dx-quick-label{ font-size:11.5px; }
+.dx-stats{ gap:12px; }
+.dx-stat{ padding:18px 20px; gap:10px; }
+.dx-stat-ico{ width:36px; height:36px; border-radius:10px; }
+.dx-stat-value{ font-family:var(--body); font-weight:800; font-size:clamp(26px,2.8vw,32px); letter-spacing:-.01em; }
+.dx-alert{ font-weight:600; border:1px solid #E3B3AA; }
+.dx-legend{ display:none; }
+@media (min-width:641px){
+  .dx-row td:first-child,.dx-row.is-late td:first-child,.dx-row.is-today td:first-child,.dx-row.is-soon td:first-child,.dx-row.is-done td:first-child{ box-shadow:none; }
+  .dx-table td{ padding:11px 14px; }
+}
+@media (max-width:640px){ .dx-pagehead h2{ font-size:21px; } .dx-search input,.dx-search button{ min-height:44px; } }
 </style>
 
 </head>
@@ -2747,11 +2776,11 @@ function dashboardHTML(){
   try{ sapaan = (typeof currentUser!=="undefined" && currentUser && currentUser.displayName) ? currentUser.displayName : (isAdmin()?"Admin":"Petugas"); }catch(e){}
 
   return `<div class="dx">
+    <div class="dx-pagehead"><h2>Dashboard</h2><span>${esc(new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}))}</span></div>
     <section class="dx-welcome">
-      <h2 class="dx-title">Selamat datang, ${esc(sapaan)}</h2>
-      <p class="dx-sub">Jelajahi koleksi dan layanan maktabah — cari judul, penyusun, atau kode buku langsung dari sini.</p>
+      <h2 class="dx-title">Selamat datang, ${esc(sapaan)} — jelajahi koleksi dan layanan maktabah</h2>
+      <p class="dx-sub">Cari judul, penyusun, atau kode buku langsung dari sini</p>
       <div class="dx-search">
-        <span class="dx-search-ico">${icon("search",15)}</span>
         <input id="heroSearchInput" placeholder="Cari buku..." aria-label="Cari buku"/>
         <button id="heroSearchBtn" type="button">Cari</button>
       </div>
@@ -2822,9 +2851,9 @@ function dxPengingat(){
     <div class="dx-card-head">
       <div><h3 class="dx-card-title">Pengingat Pengembalian</h3><p class="dx-hint">Menampilkan buku H-3 sampai yang sudah terlambat.</p></div>
       <div class="dx-chips">
-        ${overdue?`<span class="dx-chip is-late">${overdue} terlambat</span>`:""}
-        ${today?`<span class="dx-chip is-today">${today} jatuh tempo hari ini</span>`:""}
         ${soon?`<span class="dx-chip is-soon">${soon} akan jatuh tempo</span>`:""}
+        ${today?`<span class="dx-chip is-today">${today} jatuh tempo hari ini</span>`:""}
+        ${overdue?`<span class="dx-chip is-late">${overdue} terlambat</span>`:""}
       </div>
     </div>
     ${legend}
