@@ -839,6 +839,112 @@ svg[width]{display:inline-block;flex:0 0 auto}
 }
 @media (max-width:640px){ .dx-pagehead h2{ font-size:21px; } .dx-search input,.dx-search button{ min-height:44px; } }
 </style>
+<style id="faiisa-dashboard-hybrid">
+/* ===== HYBRID MINIMALIST — dashboard petugas/admin (gaya dashboard FAIISA, warna Maktabah) =====
+   Hybrid = navigasi sidebar (desktop) / bilah bawah (HP) + tab sekunder di atas konten.
+   Minimalist = permukaan putih datar, garis tipis, tanpa bayangan/gradasi, tipografi sans. */
+:root{ --barh:0px; --sbw:244px; }
+body:has(header.top){ background:var(--ivory); }
+body:has(header.top) :is(h1.brand,.panel-title,.dash-banner-title,.stat-value,.top-rank,.modal h3,.modal-title,.empty-title){ font-family:var(--body) !important; }
+body:has(header.top) .modal-backdrop{ z-index:250 !important; }
+body:has(header.top) .toast{ z-index:260 !important; }
+
+/* ---- sidebar (desktop) ---- */
+@media (min-width:921px){
+  body:has(header.top) header.top{ position:fixed; top:var(--barh); left:0; bottom:0; width:var(--sbw); z-index:90; overflow-y:auto;
+    background:#fff !important; background-image:none !important; border:0 !important; border-right:1px solid var(--line) !important; color:var(--ink); }
+  body:has(header.top) header.top .max{ max-width:none; margin:0; padding:22px 14px 16px; min-height:100%; display:flex; flex-direction:column; }
+  body:has(header.top) .brand-row{ display:contents; }
+  body:has(header.top) .brand-row > div:first-child{ order:1; padding:0 8px 18px; margin-bottom:14px; border-bottom:1px solid var(--line); }
+  body:has(header.top) .eyebrow{ color:var(--plum); font-size:9.5px; letter-spacing:.16em; margin-bottom:8px; }
+  body:has(header.top) h1.brand{ color:var(--plum-deep); font-size:17px; font-weight:700; line-height:1.25; }
+  body:has(header.top) .brand-sub{ color:var(--ink-soft); font-size:12px; margin-top:4px; }
+  body:has(header.top) .group-tabs{ order:2; flex:1; flex-direction:column; gap:2px; overflow:visible; }
+  body:has(header.top) .group-btn{ width:100%; justify-content:flex-start; gap:11px; border-radius:10px; padding:10px 12px; background:transparent; color:var(--ink-soft); font-size:13.5px; font-weight:600; }
+  body:has(header.top) .group-btn:hover{ background:var(--ivory-deep); }
+  body:has(header.top) .group-btn.active{ background:#E9EDDC; color:var(--plum); font-weight:700; box-shadow:inset 3px 0 0 var(--gold); }
+  body:has(header.top) .brand-row > div:last-child{ order:3; flex-direction:column !important; flex-wrap:nowrap !important; align-items:stretch !important; gap:6px !important; margin-top:12px; padding-top:14px; border-top:1px solid var(--line); }
+  body:has(header.top) header.top .mode-badge{ color:var(--ink-soft); background:var(--ivory); border:1px solid var(--line); justify-content:flex-start; border-radius:9px; padding:8px 11px; font-size:12px; }
+  body:has(header.top) header.top button.mode-badge:hover{ background:var(--ivory-deep); }
+  body:has(header.top) main{ margin-left:var(--sbw); padding:28px 0 36px; }
+  body:has(header.top) main .max{ max-width:1120px; padding:0 36px; }
+  body:has(header.top) footer{ margin-left:var(--sbw); }
+}
+
+/* ---- bilah bawah (HP / tablet) ---- */
+@media (max-width:920px){
+  body:has(header.top) header.top, body:has(header.top) header.top .max{ display:contents; }
+  body:has(header.top) .brand-row{ display:block; padding:14px 16px 12px; background:#fff; border-bottom:1px solid var(--line); }
+  body:has(header.top) .eyebrow{ color:var(--plum); font-size:9.5px; letter-spacing:.14em; margin-bottom:5px; }
+  body:has(header.top) h1.brand{ color:var(--plum-deep); font-size:18px; font-weight:700; }
+  body:has(header.top) .brand-sub{ color:var(--ink-soft); font-size:12px; margin:3px 0 0; }
+  body:has(header.top) .brand-row > div:last-child{ margin-top:10px; }
+  body:has(header.top) header.top .mode-badge{ color:var(--ink-soft); background:var(--ivory); border:1px solid var(--line); padding:6px 10px; font-size:11px; border-radius:9px; }
+  body:has(header.top) .group-tabs{ position:fixed; left:0; right:0; bottom:0; z-index:120; display:flex; gap:2px; overflow-x:auto; background:#fff; border-top:1px solid var(--line);
+    padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px)); scrollbar-width:none; }
+  body:has(header.top) .group-tabs::-webkit-scrollbar{ display:none; }
+  body:has(header.top) .group-btn{ flex:0 0 auto; flex-direction:column; justify-content:center; gap:3px; min-width:66px; padding:7px 8px; font-size:10.5px; font-weight:700; border-radius:10px; background:transparent; color:var(--ink-soft); }
+  body:has(header.top) .group-btn.active{ background:#E9EDDC; color:var(--plum); box-shadow:none; }
+  body:has(header.top) main{ margin:0; padding:14px 0 96px; }
+  body:has(header.top) main .max{ padding:0 14px; }
+  body:has(header.top) footer{ margin:0 0 70px; padding:18px 14px 12px; }
+  body:has(header.top) .toast{ bottom:86px; }
+}
+
+/* ---- judul halaman ---- */
+.page-head{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 18px; }
+.page-head h2{ margin:0; font:700 22px/1.2 var(--body); color:var(--plum-deep); letter-spacing:-.01em; }
+.page-head p{ margin:0; font-size:12.5px; color:var(--ink-soft); }
+@media (max-width:920px){ .page-head h2{ font-size:19px; } }
+
+/* ---- tab sekunder: garis bawah ---- */
+body:has(header.top) .subtabs{ gap:22px; padding:0; margin-bottom:22px; border-bottom:1px solid var(--line); }
+body:has(header.top) .sub-btn{ border:0; border-radius:0; background:transparent; padding:10px 2px; margin-bottom:-1px; color:var(--ink-soft); font-size:13px; font-weight:600; border-bottom:2px solid transparent; }
+body:has(header.top) .sub-btn:hover{ color:var(--plum); }
+body:has(header.top) .sub-btn.active{ background:transparent; color:var(--plum); border-bottom-color:var(--gold); }
+
+/* ---- permukaan datar ---- */
+body:has(header.top) :is(.panel,.stat-card,.quick-tile,.table-wrap,.book-card,.kat-row,.card){ background:#fff; border:1px solid var(--line) !important; border-radius:12px; box-shadow:none !important; }
+body:has(header.top) .stat-blob{ display:none; }
+body:has(header.top) .stat-card{ padding:18px 20px; }
+body:has(header.top) .stat-value{ font-size:28px; font-weight:700; letter-spacing:-.02em; color:var(--plum-deep); }
+body:has(header.top) .stat-label{ font-size:12px; color:var(--ink-soft); margin-top:6px; }
+body:has(header.top) .stat-icon{ width:30px; height:30px; border-radius:8px; margin-bottom:12px; }
+body:has(header.top) .quick-tile{ padding:16px 8px; }
+body:has(header.top) .quick-tile:hover{ border-color:var(--plum) !important; }
+body:has(header.top) .quick-tile-icon{ background:#E9EDDC; color:var(--plum); border-radius:10px; }
+body:has(header.top) .quick-tile-label{ font-weight:600; color:var(--ink); }
+body:has(header.top) .panel-title{ font-size:15px; font-weight:700; color:var(--plum-deep); }
+body:has(header.top) .dash-banner{ background:#fff; border:1px solid var(--line); border-radius:14px; min-height:0; margin-bottom:22px; }
+body:has(header.top) .dash-banner-bg{ display:none; }
+body:has(header.top) .dash-banner-overlay{ background:#fff !important; color:var(--plum-deep); padding:22px 24px; }
+body:has(header.top) .dash-banner-title{ font-size:19px; font-weight:700; color:var(--plum-deep); }
+body:has(header.top) .dash-banner-sub{ color:var(--ink-soft); margin-bottom:6px; }
+body:has(header.top) .alert-box{ border-radius:10px; }
+body:has(header.top) .btn{ border-radius:9px; }
+body:has(header.top) .btn-gold{ background:var(--gold); color:var(--plum-deep); }
+body:has(header.top) .search-box, body:has(header.top) select, body:has(header.top) .field input, body:has(header.top) .field select, body:has(header.top) .field textarea{ border-radius:9px; }
+body:has(header.top) .data-table th{ border-bottom:1px solid var(--line); font-size:10.5px; letter-spacing:.08em; color:var(--ink-soft); background:var(--ivory); }
+body:has(header.top) .data-table td{ border-bottom:1px solid #EFE6D2; }
+body:has(header.top) .data-table tbody tr:hover td{ background:var(--ivory); }
+body:has(header.top) .chart-bar{ background:var(--plum); border-radius:5px 5px 0 0; }
+body:has(header.top) .top-rank{ color:var(--gold); }
+body:has(header.top) footer{ color:var(--ink-soft); }
+
+@media print{ header.top{ display:none !important; } main, footer{ margin-left:0 !important; } body{ padding-top:0 !important; } }
+body:has(header.top) .stat-grid{ grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); }
+body:has(header.top) .stat-value{ font-size:26px; }
+body:has(header.top) .dash-banner input{ border:1px solid var(--line) !important; background:var(--ivory) !important; border-radius:9px !important; }
+body:has(header.top) .eyebrow{ font-size:9px !important; letter-spacing:.1em !important; }
+@media (max-width:920px){
+  body:has(header.top) #firebaseStatus, body:has(header.top) .eyebrow{ display:none !important; }
+  body:has(header.top) .brand-row{ padding:12px 16px 10px; }
+  body:has(header.top) .brand-row > div:last-child{ flex-wrap:nowrap !important; gap:6px !important; }
+  body:has(header.top) header.top .mode-badge{ padding:6px 9px; }
+}
+body:has(header.top){ --display:var(--body); }
+</style>
+
 
 </head>
 <body>
@@ -2733,7 +2839,8 @@ function bindPublicGuideStepper(){
 /* ============ DASHBOARD (redesign tampilan — Premium Hybrid Minimalist) ============
    Data & sumber tetap sama dengan versi sebelumnya (lihat dashboardHTMLLegacy).
    Hanya markup presentasi + CSS ber-prefix .dx yang berubah. */
-function dashboardHTML(){
+function dashboardHTML(){ return dashboardHTMLLegacy(); }
+function dashboardHTMLDx(){
   const al=activeLoans(); const overdueCount=al.filter(isOverdue).length;
   const returnedThisMonth = state.loans.filter(l=>l.tanggalKembali && new Date(l.tanggalKembali).getMonth()===todayDate.getMonth() && new Date(l.tanggalKembali).getFullYear()===todayDate.getFullYear()).length;
   const totalDenda = state.loans.filter(l=>!l.dendaLunas && dendaLoan(l)>0).reduce((s,l)=>s+dendaLoan(l),0);
@@ -5783,6 +5890,24 @@ window.addEventListener("hashchange", ()=>{
     const fs=document.getElementById("firebaseStatus");
     if(fs){ fs.innerHTML=icon('alertTriangle')+"Lokal"; fs.title="Firebase belum tersambung"; }
   });
+})();
+
+// --- judul halaman (Hybrid Minimalist) ---
+(function(){
+  function decorate(){
+    try{
+      const head=document.querySelector('header.top'); const mx=document.querySelector('main .max');
+      if(!head||!mx||mx.querySelector('.page-head')) return;
+      const g=(typeof GROUPS!=='undefined')?GROUPS.find(x=>x.key===state.group):null;
+      const d=new Date().toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+      const el=document.createElement('div'); el.className='page-head';
+      el.innerHTML='<h2>'+((g&&g.label)||'Dashboard')+'</h2><p>'+d+'</p>';
+      mx.insertBefore(el, mx.firstChild);
+    }catch(e){}
+  }
+  const _render=window.render;
+  window.render=function(){ const r=_render.apply(this,arguments); decorate(); return r; };
+  decorate();
 })();
 </script>
 </body>
