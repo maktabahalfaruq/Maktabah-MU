@@ -944,6 +944,25 @@ body:has(header.top) .eyebrow{ font-size:9px !important; letter-spacing:.1em !im
 }
 body:has(header.top){ --display:var(--body); }
 </style>
+<style id="faiisa-header-image">
+/* Bagian atas (header) kembali memakai gambar latar seperti semula */
+@media (min-width:921px){
+  body:has(header.top) .brand-row > div:first-child{ background-color:var(--plum-deep); background-image:linear-gradient(160deg,rgba(30,50,39,.88),rgba(51,81,63,.80)),var(--hero-img); background-size:cover; background-position:center 35%; border-radius:12px; padding:16px 14px; border-bottom:0; margin-bottom:14px; }
+  body:has(header.top) .eyebrow{ color:var(--gold-soft); }
+  body:has(header.top) h1.brand{ color:var(--ivory); }
+  body:has(header.top) .brand-sub{ color:var(--gold-soft); }
+}
+@media (max-width:920px){
+  body:has(header.top) .brand-row{ background-color:var(--plum-deep); background-image:linear-gradient(160deg,rgba(30,50,39,.88),rgba(51,81,63,.80)),var(--hero-img); background-size:cover; background-position:center 35%; border-bottom:3px solid var(--gold); padding:26px 20px 16px; }
+  body:has(header.top) .eyebrow{ display:block !important; font-size:11px !important; letter-spacing:.22em !important; color:var(--gold-soft); margin-bottom:8px; }
+  body:has(header.top) h1.brand{ color:var(--ivory); font-size:clamp(22px,3vw,32px); font-weight:600; font-family:'Fraunces',Georgia,serif !important; line-height:1.15; }
+  body:has(header.top) .brand-sub{ color:var(--gold-soft); font-size:13px; margin:6px 0 0; }
+  body:has(header.top) .brand-row > div:last-child{ margin-top:16px; }
+  body:has(header.top) header.top .mode-badge{ background:rgba(255,255,255,.12); color:var(--gold-soft); border:1px solid rgba(228,206,135,.4); padding:5px 10px; font-size:11px; border-radius:999px; }
+  body:has(header.top) #firebaseStatus{ display:inline-block !important; }
+}
+</style>
+
 
 
 </head>
